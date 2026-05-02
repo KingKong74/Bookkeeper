@@ -1,0 +1,854 @@
+/**
+ * views/Banking/Transactions.jsx
+ * Always-visible inline inputs for category, payee, and description.
+ * No floating dropdowns — everything editable directly in the row.
+ */
+
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { useApp } from '../../context/AppContext';
+import { MetricCard, PayeeAvatar } from '../../components/ui/index';
+import { PeriodBar } from '../../components/ui/PeriodBar';
+import { TransactionModal } from './TransactionModal';
+import { AddTransactionModal } from './AddTransactionModal';
+import { fmt, filterByDateRange, runAutoCatRules } from '../../utils/helpers';
+import { updateTransaction, deleteTransaction, createRule, upsertPayee, createCategory } from '../../lib/supabase';
+import { logAudit } from '../../lib/audit';
+import { getSessionPref, setSessionPref } from '../../hooks/useSessionPref';
+
+const ACCT_ICON = { checking:'🏦', savings:'💰', credit_card:'💳', loan:'📋', investment:'📈' };
+const CAT_TYPE_ORDER  = ['income','expense','asset','liability','equity'];
+const CAT_TYPE_LABELS = { income:'Income', expense:'Expenses', asset:'Assets', liability:'Liabilities', equity:'Equity' };
+
+// ── Inline category picker ────────────────────────────────────────────────────
+function InlineCatPicker({ txnId, currentCatId, cats, catMap, onSelect, onCreateCat }) {
+  const [q,    setQ]    = useState('');
+  const [open, setOpen] = useState(false);
+  const [hi,   setHi]   = useState(0);
+  const inputRef        = useRef(null);
+  const containerRef    = useRef(null);
+
+  const flat = q.trim()
+    ? cats.filter(c => c.l.toLowerCase().includes(q.toLowerCase()))
+    : cats;
+
+  useEffect(() => setHi(0), [q]);
+
+  useEffect(() => {
+    function down(e) {
+      if (containerRef.current && !containerRef.current.contains(e.target)) setOpen(false);
+    }
+    document.addEventListener('mousedown', down);
+    return () => document.removeEventListener('mousedown', down);
+  }, []);
+
+  function pick(catId) {
+    onSelect(txnId, catId);
+    setQ('');
+    setOpen(false);
+  }
+
+  function handleKey(e) {
+    if (!open) { if (e.key !== 'Escape') setOpen(true); return; }
+    if (e.key === 'Escape')   { setOpen(false); return; }
+    if (e.key === 'ArrowDown') { e.preventDefault(); setHi(i => Math.min(i+1, flat.length-1)); return; }
+    if (e.key === 'ArrowUp')   { e.preventDefault(); setHi(i => Math.max(i-1, 0)); return; }
+    if (e.key === 'Enter' || e.key === 'Tab') {
+      e.preventDefault();
+      if (flat[hi]) pick(flat[hi].id);
+      else if (flat.length === 0 && q.trim().length > 1 && onCreateCat) {
+        onCreateCat(q.trim()).then(cat => { if (cat) pick(cat.id); });
+      }
+    }
+  }
+
+  const current = currentCatId ? catMap[currentCatId] : null;
+
+  // Group for display
+  const groups = {};
+  CAT_TYPE_ORDER.forEach(t => { groups[t] = []; });
+  flat.forEach(c => { if (groups[c.t]) groups[c.t].push(c); });
+  const sections = q.trim()
+    ? [{ label:'', items: flat }]
+    : CAT_TYPE_ORDER.filter(t => groups[t].length > 0).map(t => ({ label: CAT_TYPE_LABELS[t], items: groups[t] }));
+
+  let globalIdx = 0;
+
+  return (
+    <div ref={containerRef} style={{ position:'relative' }} onClick={e => e.stopPropagation()}>
+      {/* Always-visible input */}
+      <div style={{ display:'flex', alignItems:'center', gap:4 }}>
+        {current && !open && (
+          <span style={{ width:7, height:7, borderRadius:'50%', background:current.col, flexShrink:0, display:'inline-block' }} />
+        )}
+        <input
+          ref={inputRef}
+          value={open ? q : (current?.l || '')}
+          placeholder="Category…"
+          onFocus={() => { setOpen(true); setQ(''); }}
+          onChange={e => { setQ(e.target.value); setOpen(true); }}
+          onKeyDown={handleKey}
+          style={{
+            width:'100%', minWidth:0, padding:'2px 6px', fontSize:11.5,
+            border:'0.5px solid transparent', borderRadius:'var(--rr)',
+            background: '#FDFAF6',
+            color: current ? 'var(--ink)' : 'var(--stone)',
+            fontFamily:'var(--font-sans)', cursor:'text',
+            outline:'none',
+          }}
+          onMouseEnter={e => { if (!open) e.currentTarget.style.borderColor='var(--bd2)'; }}
+          onMouseLeave={e => { if (!open) e.currentTarget.style.borderColor='transparent'; }}
+        />
+        {current && (
+          <button
+            onClick={e => { e.stopPropagation(); onSelect(txnId, null); }}
+            title="Remove category"
+            className="inline-clear-btn"
+            style={{ background:'none', border:'none', cursor:'pointer', color:'var(--stone)', fontSize:12, padding:'0 2px', lineHeight:1, flexShrink:0, opacity:0 }}
+          >×</button>
+        )}
+      </div>
+
+      {/* Dropdown */}
+      {open && (
+        <div style={{
+          position:'fixed',
+          left: containerRef.current ? Math.min(containerRef.current.getBoundingClientRect().left, window.innerWidth - 230) : 0,
+          top:  containerRef.current ? containerRef.current.getBoundingClientRect().bottom + 2 : 0,
+          zIndex:700, background:'#FDFAF6', border:'0.5px solid var(--bd2)',
+          borderRadius:'var(--rl)', minWidth:220, maxHeight:280, overflowY:'auto',
+          boxShadow:'0 6px 20px rgba(42,36,32,0.14)',
+        }}>
+          <div style={{ position:'sticky', top:0, background:'#FDFAF6', borderBottom:'0.5px solid var(--bd)', zIndex:1 }}>
+            <input autoFocus value={q} onChange={e => setQ(e.target.value)} onKeyDown={handleKey}
+              placeholder="Search categories…"
+              style={{ width:'100%', boxSizing:'border-box', padding:'7px 10px', fontSize:12.5, border:'none', background:'#FDFAF6', outline:'none', fontFamily:'var(--font-sans)' }} />
+          </div>
+          {current && (
+            <div style={{ padding:'5px 10px', fontSize:11.5, color:'var(--stone)', borderBottom:'0.5px solid var(--bd)', cursor:'pointer' }}
+              onMouseDown={() => { onSelect(txnId, null); setOpen(false); }}>
+              <span style={{ fontSize:11, marginRight:6 }}>✕</span>Remove category
+            </div>
+          )}
+          {sections.map(({ label, items }) => (
+            <React.Fragment key={label}>
+              {label && <div style={{ padding:'4px 10px 2px', fontSize:10, fontWeight:600, color:'var(--stone)', textTransform:'uppercase', letterSpacing:'0.05em', background:'var(--sand)', borderTop:'0.5px solid var(--bd)' }}>{label}</div>}
+              {items.map(c => {
+                const idx = globalIdx++;
+                return (
+                  <div key={c.id}
+                    style={{ padding:'6px 10px', fontSize:12, cursor:'pointer', display:'flex', alignItems:'center', gap:7, background: idx===hi ? 'var(--al)' : '', fontWeight: c.id===currentCatId?500:400 }}
+                    onMouseEnter={() => setHi(idx)}
+                    onMouseDown={() => pick(c.id)}
+                  >
+                    <span style={{ width:7, height:7, borderRadius:'50%', background:c.col, flexShrink:0 }} />
+                    <span style={{ flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{c.l}</span>
+
+                  </div>
+                );
+              })}
+            </React.Fragment>
+          ))}
+          {flat.length === 0 && q.trim().length > 1 && (
+            <div
+              style={{ padding:'8px 10px', fontSize:12, cursor:'pointer', color:'var(--a2)', fontWeight:500, display:'flex', alignItems:'center', gap:6 }}
+              onMouseDown={async () => { if (onCreateCat) { const cat = await onCreateCat(q.trim()); if (cat) { pick(cat.id); } } }}
+            >
+              <span style={{ fontSize:13 }}>+</span> Create category "{q.trim()}"
+            </div>
+          )}
+          {flat.length === 0 && !q.trim() && <div style={{ padding:'10px', fontSize:12, color:'var(--stone)', textAlign:'center' }}>No matches</div>}
+          <div style={{ padding:'3px 10px', fontSize:10, color:'var(--sand4)', borderTop:'0.5px solid var(--bd)' }}>↑↓ · Enter/Tab · Esc</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Inline payee picker ───────────────────────────────────────────────────────
+function InlinePayeePicker({ txnId, currentPayee, payees, setPayees, onSelect, org, PALETTE }) {
+  const [q,    setQ]    = useState('');
+  const [open, setOpen] = useState(false);
+  const [hi,   setHi]   = useState(0);
+  const containerRef    = useRef(null);
+
+  const filtered  = (payees||[]).filter(p => p.name.toLowerCase().includes(q.toLowerCase()));
+  const canCreate = q.trim().length > 1 && !(payees||[]).find(p => p.name.toLowerCase() === q.trim().toLowerCase());
+  const allItems  = canCreate ? [...filtered, { _create:true, name:q.trim() }] : filtered;
+
+  useEffect(() => setHi(0), [q]);
+
+  useEffect(() => {
+    function down(e) {
+      if (containerRef.current && !containerRef.current.contains(e.target)) setOpen(false);
+    }
+    document.addEventListener('mousedown', down);
+    return () => document.removeEventListener('mousedown', down);
+  }, []);
+
+  async function createAndSelect(name) {
+    const col  = (PALETTE||[])[payees.length % (PALETTE||['#888']).length] || '#888';
+    const newP = await upsertPayee(org.id, name.trim(), col);
+    setPayees(prev => prev.find(p => p.id === newP.id) ? prev : [...prev, newP]);
+    onSelect(txnId, newP);
+    setOpen(false); setQ('');
+  }
+
+  function pickItem(item) {
+    if (item._create) createAndSelect(item.name);
+    else { onSelect(txnId, item); setOpen(false); setQ(''); }
+  }
+
+  function handleKey(e) {
+    if (!open) { if (e.key !== 'Escape') setOpen(true); return; }
+    if (e.key === 'Escape')    { setOpen(false); return; }
+    if (e.key === 'ArrowDown') { e.preventDefault(); setHi(i => Math.min(i+1, allItems.length-1)); return; }
+    if (e.key === 'ArrowUp')   { e.preventDefault(); setHi(i => Math.max(i-1, 0)); return; }
+    if (e.key === 'Enter' || e.key === 'Tab') {
+      e.preventDefault();
+      if (allItems[hi]) pickItem(allItems[hi]);
+      else if (canCreate) createAndSelect(q.trim());
+    }
+  }
+
+  return (
+    <div ref={containerRef} style={{ position:'relative' }} onClick={e => e.stopPropagation()}>
+      <div style={{ display:'flex', alignItems:'center', gap:4 }}>
+        {currentPayee && !open && (
+          <PayeeAvatar name={currentPayee} payeesList={payees||[]} size="sm" />
+        )}
+        <input
+          value={open ? q : (currentPayee || '')}
+          placeholder="Payee…"
+          onFocus={() => { setOpen(true); setQ(currentPayee || ''); }}
+          onChange={e => { setQ(e.target.value); setOpen(true); }}
+          onKeyDown={handleKey}
+          style={{
+            width:'100%', minWidth:0, padding:'2px 6px', fontSize:11.5,
+            border:'0.5px solid transparent', borderRadius:'var(--rr)',
+            background: '#FDFAF6',
+            color: currentPayee ? 'var(--ink)' : 'var(--stone)',
+            fontFamily:'var(--font-sans)', cursor:'text', outline:'none',
+          }}
+          onMouseEnter={e => { if (!open) e.currentTarget.style.borderColor='var(--bd2)'; }}
+          onMouseLeave={e => { if (!open) e.currentTarget.style.borderColor='transparent'; }}
+        />
+        {currentPayee && (
+          <button
+            onClick={e => { e.stopPropagation(); onSelect(txnId, null); }}
+            title="Remove payee"
+            className="inline-clear-btn"
+            style={{ background:'none', border:'none', cursor:'pointer', color:'var(--stone)', fontSize:12, padding:'0 2px', lineHeight:1, flexShrink:0, opacity:0 }}
+          >×</button>
+        )}
+      </div>
+
+      {open && (
+        <div style={{
+          position:'fixed',
+          left: containerRef.current ? Math.min(containerRef.current.getBoundingClientRect().left, window.innerWidth - 230) : 0,
+          top:  containerRef.current ? containerRef.current.getBoundingClientRect().bottom + 2 : 0,
+          zIndex:700, background:'#FDFAF6', border:'0.5px solid var(--bd2)',
+          borderRadius:'var(--rl)', minWidth:220, maxHeight:260, overflowY:'auto',
+          boxShadow:'0 6px 20px rgba(42,36,32,0.14)',
+        }}>
+          <div style={{ position:'sticky', top:0, background:'#FDFAF6', borderBottom:'0.5px solid var(--bd)', zIndex:1 }}>
+            <input autoFocus value={q} onChange={e => setQ(e.target.value)} onKeyDown={handleKey}
+              placeholder="Search or create…"
+              style={{ width:'100%', boxSizing:'border-box', padding:'7px 10px', fontSize:12.5, border:'none', background:'#FDFAF6', outline:'none', fontFamily:'var(--font-sans)' }} />
+          </div>
+          {currentPayee && (
+            <div style={{ padding:'5px 10px', fontSize:11.5, color:'var(--stone)', borderBottom:'0.5px solid var(--bd)', cursor:'pointer' }}
+              onMouseDown={() => { onSelect(txnId, null); setOpen(false); }}>
+              <span style={{ fontSize:11, marginRight:6 }}>✕</span>Remove payee
+            </div>
+          )}
+          {filtered.map((p, i) => (
+            <div key={p.id}
+              style={{ padding:'6px 10px', fontSize:12, cursor:'pointer', display:'flex', alignItems:'center', gap:8, background: i===hi ? 'var(--al)' : '' }}
+              onMouseEnter={() => setHi(i)}
+              onMouseDown={() => pickItem(p)}
+            >
+              <span style={{ width:20, height:20, borderRadius:'50%', background:`${p.colour||p.col||'#888'}22`, color:p.colour||p.col||'#888', fontSize:9, display:'inline-flex', alignItems:'center', justifyContent:'center', flexShrink:0, fontWeight:700 }}>
+                {p.name.slice(0,2).toUpperCase()}
+              </span>
+              <span style={{ flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{p.name}</span>
+            </div>
+          ))}
+          {canCreate && (
+            <div
+              style={{ padding:'6px 10px', fontSize:12, cursor:'pointer', color:'var(--a2)', fontWeight:500, borderTop:'0.5px solid var(--bd)', background: hi===filtered.length ? 'var(--al)' : '' }}
+              onMouseEnter={() => setHi(filtered.length)}
+              onMouseDown={() => createAndSelect(q.trim())}
+            >
+              <span style={{ marginRight:6 }}>+</span>Create "{q.trim()}"
+            </div>
+          )}
+          {filtered.length === 0 && !canCreate && (
+            <div style={{ padding:'10px', fontSize:12, color:'var(--stone)', textAlign:'center' }}>
+              {payees.length === 0 ? 'Type a name to create' : 'No matches'}
+            </div>
+          )}
+          <div style={{ padding:'3px 10px', fontSize:10, color:'var(--sand4)', borderTop:'0.5px solid var(--bd)' }}>↑↓ · Enter/Tab · Esc</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Inline description editor ─────────────────────────────────────────────────
+function InlineDescEditor({ txnId, value, note, onSave }) {
+  const [editing, setEditing] = useState(false);
+  const [draft,   setDraft]   = useState(value);
+
+  function commit() {
+    if (draft.trim() !== value) onSave(txnId, draft.trim() || value);
+    setEditing(false);
+  }
+
+  if (editing) {
+    return (
+      <input
+        autoFocus
+        value={draft}
+        onChange={e => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); commit(); } if (e.key === 'Escape') { setDraft(value); setEditing(false); } }}
+        onClick={e => e.stopPropagation()}
+        style={{ width:'100%', padding:'2px 4px', fontSize:12, border:'0.5px solid var(--a)', borderRadius:'var(--rr)', background:'#fff', fontFamily:'var(--font-sans)', outline:'none' }}
+      />
+    );
+  }
+
+  return (
+    <div style={{ display:'flex', alignItems:'center', gap:4, overflow:'hidden' }}
+      onClick={e => { e.stopPropagation(); setDraft(value); setEditing(true); }}>
+      <span style={{ overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', flex:1, cursor:'text' }}
+        title="Click to edit">{value}</span>
+      {note && <span style={{ color:'var(--a)', fontSize:11, flexShrink:0 }}>📝</span>}
+    </div>
+  );
+}
+
+// ── Delete toast ──────────────────────────────────────────────────────────────
+function DeleteToast({ txn, onConfirm, onCancel }) {
+  if (!txn) return null;
+  return (
+    <div style={{ position:'fixed', bottom:24, left:'50%', transform:'translateX(-50%)', background:'#2A2420', color:'#F5F1EB', borderRadius:10, padding:'12px 18px', display:'flex', alignItems:'center', gap:14, zIndex:700, boxShadow:'0 6px 24px rgba(0,0,0,0.25)', fontSize:13, minWidth:320 }}>
+      <span style={{ flex:1 }}>Delete <strong>"{txn.desc?.slice(0,30)}{txn.desc?.length>30?'…':''}"</strong>?</span>
+      <button onClick={onCancel} style={{ background:'rgba(255,255,255,0.12)', border:'none', color:'#F5F1EB', borderRadius:6, padding:'5px 12px', cursor:'pointer', fontSize:12 }}>Cancel</button>
+      <button onClick={onConfirm} style={{ background:'#A32D2D', border:'none', color:'#fff', borderRadius:6, padding:'5px 12px', cursor:'pointer', fontSize:12, fontWeight:500 }}>Delete</button>
+    </div>
+  );
+}
+
+// ── Make-a-rule prompt ────────────────────────────────────────────────────────
+function MakeRulePrompt({ desc, catLabel, onAccept, onDismiss, onNeverShow }) {
+  return (
+    <div style={{ position:'fixed', bottom:24, right:24, background:'#FDFAF6', border:'0.5px solid var(--bd2)', borderRadius:10, padding:'12px 16px', zIndex:700, boxShadow:'0 6px 24px rgba(42,36,32,0.15)', maxWidth:320, fontSize:12 }}>
+      <div style={{ fontWeight:500, marginBottom:4, fontSize:12.5 }}>💡 Make this a rule?</div>
+      <div style={{ color:'var(--stone)', marginBottom:10, lineHeight:1.5 }}>
+        Always categorise <strong>"{desc?.slice(0,25)}{desc?.length>25?'…':''}"</strong> as <strong>{catLabel}</strong>?
+      </div>
+      <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
+        <button className="btn btn-a btn-sm" onClick={onAccept}>Create rule</button>
+        <button className="btn btn-sm" onClick={onDismiss}>Not now</button>
+        <button onClick={onNeverShow} style={{ background:'none', border:'none', cursor:'pointer', color:'var(--stone)', fontSize:11, textDecoration:'underline', padding:'4px 2px' }}>Don't show again</button>
+      </div>
+    </div>
+  );
+}
+
+// ── Main component ────────────────────────────────────────────────────────────
+export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
+  const { txns, setTxns, cats, setCats, catMap, rules, setRules, payees, setPayees,
+          accounts, dateFrom, dateTo, toast, org, user, PALETTE } = useApp();
+
+  const [accountTab,    setAccountTab]    = useState(defaultAccountTab);
+  const [allocTab,      setAllocTab]      = useState('all');
+  const [search,        setSearch]        = useState('');
+  const [typeFilter,    setTypeFilter]    = useState('');
+  const [payeeFilter,   setPayeeFilter]   = useState('');
+  const [catFilter,     setCatFilter]     = useState('');
+  const [sortCol,       setSortCol]       = useState('date');
+  const [sortDir,       setSortDir]       = useState('desc');
+  const [selected,      setSelected]      = useState(new Set());
+  const [bulkCatDD,     setBulkCatDD]     = useState(false);
+  const [detailId,      setDetailId]      = useState(null);
+  const [showAdd,       setShowAdd]       = useState(false);
+  const [pendingDelete, setPendingDelete] = useState(null);
+  const [rulePrompt,    setRulePrompt]    = useState(null);
+  const [justAllocated, setJustAllocated] = useState(new Set());
+  const lastClickedIdx  = useRef(null);
+  const recentAllocRef  = useRef({});
+
+  // Apply defaultAccountTab from navigation
+  useEffect(() => {
+    if (defaultAccountTab !== null) { setAccountTab(defaultAccountTab); onClearDefaultTab?.(); }
+  }, [defaultAccountTab]); // eslint-disable-line
+
+  // Ctrl+A
+  useEffect(() => {
+    function onKeyDown(e) {
+      if ((e.ctrlKey||e.metaKey) && e.key==='a' && !e.target.matches('input,textarea,select')) {
+        e.preventDefault();
+        setSelected(new Set((window.__ledgerFt||[]).map(t => t.id)));
+      }
+      if (e.key==='Escape') clearSel();
+    }
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, []);
+
+  // Category groups for bulk allocate
+  const catsByType = useMemo(() => {
+    const g = {}; CAT_TYPE_ORDER.forEach(t => { g[t] = []; });
+    (cats||[]).forEach(c => { if (g[c.t]) g[c.t].push(c); });
+    return g;
+  }, [cats]);
+
+  // Pending categories from rules
+  const pendingCatMap = useMemo(() => {
+    const unalloc = (txns||[]).filter(t => !t.cat);
+    const map = {};
+    runAutoCatRules(unalloc, rules||[]).forEach(s => { map[s.txnId] = s; });
+    return map;
+  }, [txns, rules]);
+
+  // Account balances
+  const acctBalances = useMemo(() => {
+    const map = {};
+    (accounts||[]).forEach(a => {
+      const sum = (txns||[]).filter(t => t.account_id===a.id).reduce((s,t)=>s+(t.amt??0),0);
+      map[a.id] = (a.opening_balance||0) + sum;
+    });
+    return map;
+  }, [accounts, txns]);
+
+  // Base filtered set
+  const baseFt = useMemo(() => {
+    let ft = filterByDateRange(txns||[], dateFrom, dateTo);
+    if (accountTab==='unlinked') ft = ft.filter(t => !t.account_id);
+    else if (accountTab)         ft = ft.filter(t => t.account_id===accountTab);
+    return ft;
+  }, [txns, dateFrom, dateTo, accountTab]);
+
+  // Reconciliation stats
+  const recon = useMemo(() => {
+    const total=baseFt.length, matched=baseFt.filter(t=>!!t.cat).length;
+    const totalIn=baseFt.filter(t=>t.amt>0).reduce((s,t)=>s+t.amt,0);
+    const totalOut=baseFt.filter(t=>t.amt<0).reduce((s,t)=>s+t.amt,0);
+    return { total, matched, unmatched:total-matched, pct:total>0?Math.round(matched/total*100):0, totalIn, totalOut };
+  }, [baseFt]);
+
+  // Display set
+  let ft = [...baseFt];
+  if (allocTab==='categorised')   ft = ft.filter(t=>!!t.cat);
+  if (allocTab==='uncategorised') ft = ft.filter(t=>!t.cat);
+  if (search) ft = ft.filter(t=>t.desc.toLowerCase().includes(search.toLowerCase())||(t.payee||'').toLowerCase().includes(search.toLowerCase())||t.date.includes(search));
+  if (typeFilter==='in')  ft = ft.filter(t=>t.amt>0);
+  if (typeFilter==='out') ft = ft.filter(t=>t.amt<0);
+  if (payeeFilter)        ft = ft.filter(t=>t.payee===payeeFilter);
+  if (catFilter)          ft = ft.filter(t=>t.cat===catFilter);
+  ft = [...ft].sort((a, b) => {
+    let av, bv;
+    if      (sortCol==='date')    { av=a.date; bv=b.date; }
+    else if (sortCol==='payee')   { av=(a.payee||'').toLowerCase(); bv=(b.payee||'').toLowerCase(); }
+    else if (sortCol==='cat')     { av=(catMap[a.cat]?.l||'').toLowerCase(); bv=(catMap[b.cat]?.l||'').toLowerCase(); }
+    else if (sortCol==='amt')     { av=a.amt??0; bv=b.amt??0; }
+    else if (sortCol==='account') { av=((accounts||[]).find(x=>x.id===a.account_id)?.name||'').toLowerCase(); bv=((accounts||[]).find(x=>x.id===b.account_id)?.name||'').toLowerCase(); }
+    else                          { av=a.date; bv=b.date; }
+    if (av<bv) return sortDir==='asc'?-1:1;
+    if (av>bv) return sortDir==='asc'?1:-1;
+    return 0;
+  });
+
+  if (typeof window!=='undefined') window.__ledgerFt = ft;
+
+  const ua = baseFt.filter(t=>!t.cat).length;
+  const unlinkedCount = useMemo(()=>filterByDateRange(txns||[],dateFrom,dateTo).filter(t=>!t.account_id).length,[txns,dateFrom,dateTo]);
+
+  // ── Handlers ────────────────────────────────────────────────────────────────
+  async function allocateCat(txnId, catId) {
+    const txn=txns.find(t=>t.id===txnId);
+    const prev=txn?.cat?catMap[txn.cat]?.l:null, next=catId?catMap[catId]?.l:null;
+    await updateTransaction(txnId,{category_id:catId??null});
+    setTxns(p=>(p||[]).map(t=>t.id===txnId?{...t,cat:catId??null,category_id:catId??null}:t));
+    if(txn) await logAudit({orgId:org.id,userId:user?.id,transaction:txn,action:catId?'category_changed':'unallocated',changedFields:{category:{from:prev??'Unallocated',to:next??'Unallocated'}}});
+    if(catId&&allocTab==='uncategorised'){
+      setJustAllocated(p=>new Set([...p,txnId]));
+      setTimeout(()=>setJustAllocated(p=>{const n=new Set(p);n.delete(txnId);return n;}),2500);
+    }
+    if(catId&&txn&&!getSessionPref('suppress_rule_prompt')){
+      const key=txn.desc.toLowerCase().slice(0,20), tr=recentAllocRef.current;
+      if(!tr[key]) tr[key]={catId,count:0};
+      if(tr[key].catId===catId){
+        tr[key].count++;
+        const noRule=!(rules||[]).some(r=>txn.desc.toLowerCase().includes(r.keyword?.toLowerCase())&&r.catId===catId);
+        if(tr[key].count>=2&&noRule&&!rulePrompt) setRulePrompt({desc:txn.desc,catId,catLabel:next,keyword:(() => {
+            // Extract meaningful keyword: up to 4 words, strip trailing codes/hashes/numbers
+            const words = txn.desc.trim().split(/\s+/);
+            const meaningful = words.slice(0, Math.min(4, words.length))
+              .filter((w,i) => i===0 || !(/^[A-Z0-9#]{6,}$/.test(w) || /^\d+$/.test(w)));
+            return meaningful.join(' ').toLowerCase();
+          })()});
+      } else { tr[key]={catId,count:1}; }
+    }
+  }
+
+  async function allocatePayee(txnId, payeeObj) {
+    const txn=txns.find(t=>t.id===txnId);
+    await updateTransaction(txnId,{payee_id:payeeObj?.id??null});
+    setTxns(p=>(p||[]).map(t=>t.id===txnId?{...t,payee:payeeObj?.name??'',payee_id:payeeObj?.id??null}:t));
+    if(txn) await logAudit({orgId:org.id,userId:user?.id,transaction:txn,action:'payee_changed',changedFields:{payee:{from:txn.payee||'None',to:payeeObj?.name||'None'}}});
+  }
+
+  // Create a new category on the spot from the inline picker
+  async function handleCreateCat(label) {
+    // Infer type from context — default expense
+    const payload = {
+      label:         label.trim(),
+      type:          'expense',
+      account_group: 'Miscellaneous',
+      colour:        PALETTE[(cats||[]).length % PALETTE.length] || '#888780',
+      sort_order:    (cats||[]).length,
+    };
+    try {
+      const created = await createCategory(org.id, payload);
+      const normalised = { ...created, l: created.label, t: created.type, col: created.colour, ac: created.account_group };
+      setCats(prev => [...(prev||[]), normalised]);
+      toast(`Category "${label}" created.`);
+      return normalised;
+    } catch(e) {
+      toast('Could not create category: ' + e.message);
+      return null;
+    }
+  }
+
+  async function saveDesc(txnId, desc) {
+    await updateTransaction(txnId, { description: desc });
+    setTxns(p=>(p||[]).map(t=>t.id===txnId?{...t,desc,description:desc}:t));
+  }
+
+  async function bulkAllocate(catId) {
+    if(!catId||selected.size===0) return;
+    const ids=[...selected];
+    await Promise.all(ids.map(id=>updateTransaction(id,{category_id:catId})));
+    setTxns(p=>(p||[]).map(t=>selected.has(t.id)?{...t,cat:catId,category_id:catId}:t));
+    setSelected(new Set()); setBulkCatDD(false);
+    toast(`${ids.length} transactions → ${catMap[catId]?.l}.`);
+  }
+
+  function requestDelete(e,txn){e.stopPropagation();setPendingDelete(txn);}
+  async function confirmDelete(){
+    const txn=pendingDelete; setPendingDelete(null);
+    await logAudit({orgId:org.id,userId:user?.id,transaction:txn,action:'deleted'});
+    await deleteTransaction(txn.id);
+    setTxns(p=>(p||[]).filter(t=>t.id!==txn.id));
+    toast('Transaction deleted.');
+  }
+
+  async function acceptRule(){
+    const{keyword,catId,catLabel}=rulePrompt;
+    try{
+      const r=await createRule(org.id,{keyword,category_id:catId,payee_name:'',sort_order:(rules||[]).length});
+      setRules(p=>[...(p||[]),{...r,catId:r.category_id,keyword:r.keyword,payee:r.payee_name||''}]);
+      toast(`Rule: "${keyword}" → ${catLabel}`);
+    }catch(e){toast('Could not save: '+e.message);}
+    setRulePrompt(null);
+  }
+
+  function toggleSort(col) {
+    if (sortCol===col) setSortDir(d=>d==='asc'?'desc':'asc');
+    else { setSortCol(col); setSortDir(col==='date'?'desc':'asc'); }
+  }
+
+  function toggleSelect(e,id){
+    e.stopPropagation();
+    const idx=ft.findIndex(t=>t.id===id);
+    if(e.shiftKey&&lastClickedIdx.current!==null){
+      const lo=Math.min(lastClickedIdx.current,idx), hi=Math.max(lastClickedIdx.current,idx);
+      setSelected(p=>{const n=new Set(p);for(let i=lo;i<=hi;i++)n.add(ft[i].id);return n;});
+    } else {
+      setSelected(p=>{const n=new Set(p);n.has(id)?n.delete(id):n.add(id);return n;});
+      lastClickedIdx.current=idx;
+    }
+  }
+  function selectAll(){setSelected(new Set(ft.map(t=>t.id)));}
+  function clearSel(){setSelected(new Set());}
+  function switchAccount(id){setAccountTab(id);clearSel();setAllocTab('all');}
+
+  return (
+    <>
+      <PeriodBar />
+
+      <div className="card" style={{ marginBottom:0, borderBottomLeftRadius:0, borderBottomRightRadius:0, borderBottom:'none' }}>
+        {/* ── Account tabs ── */}
+        <div style={{ overflowX:'auto' }}>
+          <div style={{ display:'flex', padding:'0 4px', minWidth:'max-content', borderBottom:'0.5px solid var(--bd)' }}>
+            <button onClick={()=>switchAccount(null)} style={{ padding:'9px 14px', background:'none', border:'none', cursor:'pointer', fontSize:12.5, fontFamily:'var(--font-sans)', whiteSpace:'nowrap', color:accountTab===null?'var(--ink)':'var(--stone)', fontWeight:accountTab===null?500:400, borderBottom:accountTab===null?'2px solid #BA7517':'2px solid transparent', marginBottom:-1 }}>
+              All accounts
+              <span style={{ marginLeft:6, fontSize:10, color:'var(--stone)', background:'var(--sand2)', padding:'1px 5px', borderRadius:99 }}>
+                {filterByDateRange(txns||[],dateFrom,dateTo).length}
+              </span>
+            </button>
+            {unlinkedCount>0&&(
+              <button onClick={()=>switchAccount('unlinked')} style={{ padding:'9px 14px', background:'none', border:'none', cursor:'pointer', fontSize:12.5, fontFamily:'var(--font-sans)', whiteSpace:'nowrap', color:accountTab==='unlinked'?'var(--ink)':'var(--stone)', fontWeight:accountTab==='unlinked'?500:400, borderBottom:accountTab==='unlinked'?'2px solid var(--rd)':'2px solid transparent', marginBottom:-1, display:'flex', alignItems:'center', gap:6 }}>
+                <span style={{ width:7, height:7, borderRadius:'50%', background:'var(--rd)', display:'inline-block' }} />
+                Unlinked
+                <span style={{ fontSize:10, background:'var(--rdb)', color:'var(--rd)', padding:'1px 5px', borderRadius:99, fontWeight:600 }}>{unlinkedCount}</span>
+              </button>
+            )}
+            {(accounts||[]).map(a=>{
+              const bal=acctBalances[a.id]??0, cnt=filterByDateRange(txns||[],dateFrom,dateTo).filter(t=>t.account_id===a.id).length, isCC=a.type==='credit_card', active=accountTab===a.id;
+              return (
+                <button key={a.id} onClick={()=>switchAccount(a.id)} style={{ padding:'9px 14px', background:'none', border:'none', cursor:'pointer', fontSize:12.5, fontFamily:'var(--font-sans)', whiteSpace:'nowrap', color:active?'var(--ink)':'var(--stone)', fontWeight:active?500:400, borderBottom:active?`2px solid ${a.colour||'#BA7517'}`:'2px solid transparent', marginBottom:-1, display:'flex', alignItems:'center', gap:6 }}>
+                  <span style={{ width:7, height:7, borderRadius:'50%', background:a.colour||'#888', display:'inline-block', flexShrink:0 }} />
+                  {ACCT_ICON[a.type]} {a.name}
+                  <span style={{ fontSize:10, color:'var(--stone)', background:'var(--sand2)', padding:'1px 5px', borderRadius:99 }}>{cnt}</span>
+                  <span style={{ fontSize:10, padding:'1px 6px', borderRadius:99, fontWeight:500, background:isCC?(bal>0?'var(--rdb)':'var(--gnb)'):'var(--sand)', color:isCC?(bal>0?'var(--rd)':'var(--gn)'):'var(--stone)' }}>
+                    {isCC?`${fmt(Math.abs(bal))} owed`:fmt(bal)}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* ── Recon panel ── */}
+        <div style={{ padding:'8px 14px', background:'var(--sand)', borderBottom:'0.5px solid var(--bd)', display:'flex', alignItems:'center', gap:18, flexWrap:'wrap' }}>
+          {[
+            {label:'Total',       value:recon.total},
+            {label:'Categorised', value:recon.matched,   colour:'var(--gn)'},
+            {label:'Unmatched',   value:recon.unmatched, colour:recon.unmatched>0?'var(--rd)':'var(--stone)'},
+          ].map(m=>(
+            <div key={m.label}>
+              <div style={{ fontSize:10, color:'var(--stone)', fontWeight:500, textTransform:'uppercase', letterSpacing:'0.05em' }}>{m.label}</div>
+              <div style={{ fontSize:13, fontWeight:500, color:m.colour||'var(--ink)' }}>{m.value}</div>
+            </div>
+          ))}
+          <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+            <div style={{ width:80, height:6, background:'var(--sand3)', borderRadius:3 }}>
+              <div style={{ height:6, borderRadius:3, background:recon.pct===100?'var(--gn)':'#BA7517', width:`${recon.pct}%`, transition:'width 0.3s' }} />
+            </div>
+            <span style={{ fontSize:11, fontWeight:500, color:recon.pct===100?'var(--gn)':'var(--a2)' }}>{recon.pct}%</span>
+          </div>
+          <div style={{ height:20, width:0.5, background:'var(--bd2)' }} />
+          <div><div style={{ fontSize:10, color:'var(--stone)', fontWeight:500, textTransform:'uppercase', letterSpacing:'0.05em' }}>Credits</div><div style={{ fontSize:13, fontWeight:500, color:'var(--gn)' }}>+{fmt(recon.totalIn)}</div></div>
+          <div><div style={{ fontSize:10, color:'var(--stone)', fontWeight:500, textTransform:'uppercase', letterSpacing:'0.05em' }}>Debits</div><div style={{ fontSize:13, fontWeight:500, color:'var(--rd)' }}>-{fmt(Math.abs(recon.totalOut))}</div></div>
+        </div>
+
+        {/* ── Alloc tabs + filters ── */}
+        <div style={{ borderBottom:'0.5px solid var(--bd)' }}>
+          <div style={{ display:'flex', padding:'0 12px' }}>
+            {[['all','All'],['categorised','Categorised'],['uncategorised','Uncategorised']].map(([val,label])=>(
+              <button key={val} onClick={()=>{setAllocTab(val);clearSel();}} style={{ padding:'7px 12px', background:'none', border:'none', cursor:'pointer', fontSize:12, fontFamily:'var(--font-sans)', color:allocTab===val?'var(--ink)':'var(--stone)', fontWeight:allocTab===val?500:400, borderBottom:allocTab===val?'2px solid var(--a)':'2px solid transparent', marginBottom:-1 }}>
+                {label}
+                {val==='uncategorised'&&ua>0&&<span style={{ marginLeft:5, fontSize:9, background:'var(--al)', color:'var(--a2)', padding:'1px 5px', borderRadius:99, fontWeight:600 }}>{ua}</span>}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Filters */}
+        <div className="txn-filters">
+          <input placeholder="Search…" value={search} onChange={e=>setSearch(e.target.value)} />
+          <select value={typeFilter} onChange={e=>setTypeFilter(e.target.value)}>
+            <option value="">All types</option>
+            <option value="in">Credits</option>
+            <option value="out">Debits</option>
+          </select>
+          <select value={payeeFilter} onChange={e=>setPayeeFilter(e.target.value)}>
+            <option value="">All payees</option>
+            {(payees||[]).map(p=><option key={p.id} value={p.name}>{p.name}</option>)}
+          </select>
+          <select value={catFilter} onChange={e=>setCatFilter(e.target.value)}>
+            <option value="">All categories</option>
+            {CAT_TYPE_ORDER.filter(t=>catsByType[t]?.length>0).map(t=>(
+              <optgroup key={t} label={CAT_TYPE_LABELS[t]}>
+                {catsByType[t].map(c=><option key={c.id} value={c.id}>{c.l}</option>)}
+              </optgroup>
+            ))}
+          </select>
+          {selected.size>0?(
+            <div style={{ marginLeft:'auto', display:'flex', alignItems:'center', gap:8 }}>
+              <span style={{ fontSize:12, color:'var(--stone)' }}>{selected.size} selected</span>
+              <div style={{ position:'relative' }}>
+                <button className="btn btn-a btn-sm" onClick={()=>setBulkCatDD(v=>!v)}>Categorise {selected.size} ▾</button>
+                {bulkCatDD&&(
+                  <div style={{ position:'absolute', top:'calc(100% + 4px)', right:0, background:'#FDFAF6', border:'0.5px solid var(--bd2)', borderRadius:'var(--rl)', padding:0, minWidth:200, maxHeight:300, overflowY:'auto', zIndex:600, boxShadow:'0 6px 20px rgba(42,36,32,0.14)' }} onMouseLeave={()=>{}}>
+                    {CAT_TYPE_ORDER.filter(t=>catsByType[t]?.length>0).map(type=>(
+                      <React.Fragment key={type}>
+                        <div style={{ padding:'4px 10px 2px', fontSize:10, fontWeight:600, color:'var(--stone)', textTransform:'uppercase', letterSpacing:'0.05em', background:'var(--sand)', borderTop:'0.5px solid var(--bd)' }}>{CAT_TYPE_LABELS[type]}</div>
+                        {catsByType[type].map(c=>(
+                          <div key={c.id} style={{ padding:'6px 10px', fontSize:12, cursor:'pointer', display:'flex', alignItems:'center', gap:7 }}
+                            onMouseEnter={e=>e.currentTarget.style.background='var(--sand)'}
+                            onMouseLeave={e=>e.currentTarget.style.background=''}
+                            onClick={()=>bulkAllocate(c.id)}>
+                            <span style={{ width:7, height:7, borderRadius:'50%', background:c.col }} />{c.l}
+                          </div>
+                        ))}
+                      </React.Fragment>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <button className="btn btn-sm" onClick={clearSel}>Clear</button>
+            </div>
+          ):(
+            <div style={{ marginLeft:'auto', display:'flex', gap:8 }}>
+              <button className="btn btn-sm" style={{ fontSize:11, color:'var(--stone)' }} onClick={selectAll} title="Ctrl+A">Select all</button>
+              <button className="btn btn-a btn-sm" onClick={()=>setShowAdd(true)}>+ Add</button>
+            </div>
+          )}
+        </div>
+
+        {/* Account info banner */}
+        {accountTab&&accountTab!=='unlinked'&&(()=>{
+          const a=(accounts||[]).find(x=>x.id===accountTab); if(!a) return null;
+          const bal=acctBalances[a.id]??0, isCC=a.type==='credit_card';
+          return(
+            <div style={{ padding:'6px 14px', background:`${a.colour||'#888'}12`, borderBottom:'0.5px solid var(--bd)', display:'flex', alignItems:'center', gap:14, fontSize:12 }}>
+              <span style={{ width:9, height:9, borderRadius:'50%', background:a.colour||'#888', display:'inline-block' }} />
+              <strong>{a.name}</strong>
+              <span style={{ color:'var(--stone)', textTransform:'capitalize' }}>{a.type.replace('_',' ')}</span>
+              <span style={{ marginLeft:'auto', fontWeight:500 }} className={isCC?(bal>0?'vn':'vp'):(bal>=0?'':'vn')}>
+                {isCC?`${fmt(Math.abs(bal))} owed`:`Balance: ${fmt(bal)}`}
+              </span>
+            </div>
+          );
+        })()}
+
+        {/* Table */}
+        <table style={{ tableLayout:'fixed' }}>
+          <colgroup>
+            <col style={{ width:32 }} />
+            <col style={{ width:82 }} />
+            <col style={{ width:'28%' }} />
+            <col style={{ width:130 }} />
+            <col style={{ width:140 }} />
+            <col style={{ width:90 }} />
+            {accountTab===null && <col style={{ width:100 }} />}
+            <col style={{ width:70 }} />
+            <col style={{ width:28 }} />
+          </colgroup>
+          <thead>
+            <tr>
+              <th />
+              <th style={{ cursor:'pointer', userSelect:'none', whiteSpace:'nowrap' }} onClick={()=>toggleSort('date')}>
+                Date {sortCol==='date'&&(sortDir==='asc'?'↑':'↓')}
+              </th>
+              <th>Description</th>
+              <th style={{ cursor:'pointer', userSelect:'none', whiteSpace:'nowrap' }} onClick={()=>toggleSort('payee')}>
+                Payee {sortCol==='payee'&&(sortDir==='asc'?'↑':'↓')}
+              </th>
+              <th style={{ cursor:'pointer', userSelect:'none', whiteSpace:'nowrap' }} onClick={()=>toggleSort('cat')}>
+                Category {sortCol==='cat'&&(sortDir==='asc'?'↑':'↓')}
+              </th>
+              <th className="tr" style={{ cursor:'pointer', userSelect:'none', whiteSpace:'nowrap' }} onClick={()=>toggleSort('amt')}>
+                Amount {sortCol==='amt'&&(sortDir==='asc'?'↑':'↓')}
+              </th>
+              {accountTab===null&&<th style={{ cursor:'pointer', userSelect:'none', whiteSpace:'nowrap' }} onClick={()=>toggleSort('account')}>
+                Account {sortCol==='account'&&(sortDir==='asc'?'↑':'↓')}
+              </th>}
+              <th style={{ textAlign:'center' }}>Status</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {ft.map(t=>{
+              const pending=!t.cat&&pendingCatMap[t.id];
+              // catMap is keyed by cat.id (DB uuid). sugCat is also a DB uuid.
+              const pendingCat=pending && pending.sugCat ? (catMap[pending.sugCat] || null) : null;
+              const isSelected=selected.has(t.id);
+              const status=t.cat?'done':(pending?'pending':'todo');
+              return(
+                <tr key={t.id}
+                  style={{ cursor:'default',
+                    background: isSelected ? 'rgba(186,117,23,0.15)' : t.cat ? '#FAF3E4' : '#FDFAF6',
+                    opacity: justAllocated.has(t.id) ? 0.3 : 1,
+                    transition: justAllocated.has(t.id) ? 'opacity 1s ease' : 'opacity 0.12s',
+                  }}>
+                  <td onClick={e=>toggleSelect(e,t.id)} style={{ cursor:'pointer' }}>
+                    <input type="checkbox" checked={isSelected} onChange={()=>{}} style={{ cursor:'pointer' }} />
+                  </td>
+                  <td style={{ color:'var(--stone)', fontSize:12 }}>
+                    {t.date}
+                    {!t.imported&&<span style={{ fontSize:9, padding:'1px 3px', borderRadius:3, background:'var(--al)', color:'var(--a2)', fontWeight:600, marginLeft:4 }}>M</span>}
+                  </td>
+                  {/* Description — inline edit */}
+                  <td style={{ maxWidth:0 }}>
+                    <InlineDescEditor txnId={t.id} value={t.desc} note={t.note} onSave={saveDesc} />
+                  </td>
+                  {/* Payee — always visible inline picker */}
+                  <td style={{ maxWidth:0 }}>
+                    <InlinePayeePicker
+                      txnId={t.id} currentPayee={t.payee}
+                      payees={payees||[]} setPayees={setPayees}
+                      onSelect={allocatePayee} org={org} PALETTE={PALETTE}
+                    />
+                  </td>
+                  {/* Category — always visible inline picker */}
+                  <td style={{ maxWidth:0 }}>
+                    {pending && pendingCat ? (
+                      <div style={{ display:'flex', alignItems:'center', gap:3 }}>
+                        {/* Show suggested category pill + apply button */}
+                        <div style={{ display:'flex', alignItems:'center', gap:4, flex:1, minWidth:0, padding:'2px 6px', borderRadius:'var(--rr)', border:'0.5px dashed '+pendingCat.col+'88', background:pendingCat.col+'10', cursor:'pointer' }}
+                          onClick={e => { e.stopPropagation(); /* open picker for manual override */ }}>
+                          <span style={{ width:7, height:7, borderRadius:'50%', background:pendingCat.col, flexShrink:0, display:'inline-block' }} />
+                          <span style={{ fontSize:11, color:pendingCat.col, fontWeight:500, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', flex:1 }}>{pendingCat.l}</span>
+                          <span style={{ fontSize:9, color:pendingCat.col, opacity:0.7, flexShrink:0 }}>auto</span>
+                        </div>
+                        <button onClick={async e=>{e.stopPropagation();await allocateCat(t.id,pending.sugCat);}} title="Approve suggestion"
+                          style={{ padding:'2px 8px', borderRadius:4, border:'0.5px solid rgba(59,109,17,0.4)', background:'var(--gnb)', color:'var(--gn)', cursor:'pointer', fontSize:11, display:'inline-flex', alignItems:'center', justifyContent:'center', flexShrink:0, fontWeight:600, whiteSpace:'nowrap' }}>✓</button>
+                      </div>
+                    ) : (
+                      <InlineCatPicker txnId={t.id} currentCatId={t.cat} cats={cats||[]} catMap={catMap} onSelect={allocateCat} onCreateCat={handleCreateCat} />
+                    )}
+                  </td>
+                  <td className={`tr ${t.amt>=0?'vp':'vn'}`} style={{ cursor:'pointer' }} onClick={()=>setDetailId(t.id)}>{t.amt>=0?'+':''}{fmt(t.amt)}</td>
+                  {accountTab===null&&(()=>{
+                    const acct=(accounts||[]).find(a=>a.id===t.account_id);
+                    return(
+                      <td>
+                        {acct?(
+                          <span style={{ display:'inline-flex', alignItems:'center', gap:5, fontSize:11 }}>
+                            <span style={{ width:7, height:7, borderRadius:'50%', background:acct.colour||'#888', flexShrink:0 }} />
+                            <span style={{ overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', color:'var(--stone2)' }}>{acct.name}</span>
+                          </span>
+                        ):(
+                          <span style={{ fontSize:11, color:'var(--sand4)', fontStyle:'italic' }}>unlinked</span>
+                        )}
+                      </td>
+                    );
+                  })()}
+                  <td style={{ textAlign:'center', cursor:'pointer' }} onClick={()=>setDetailId(t.id)}>
+                    {status==='done'   &&<span style={{ fontSize:10, padding:'2px 10px', borderRadius:4, background:'var(--gnb)', color:'var(--gn)', fontWeight:600, letterSpacing:'0.02em', display:'inline-block', minWidth:50, textAlign:'center' }}>Done</span>}
+                    {status==='pending'&&<span style={{ fontSize:10, padding:'2px 10px', borderRadius:4, fontWeight:600, letterSpacing:'0.04em', display:'inline-block', minWidth:50, textAlign:'center', background:'var(--al)', color:'var(--a2)', border:'0.5px solid rgba(186,117,23,0.3)' }}>Match</span>}
+                    {status==='todo'   &&<span style={{ fontSize:10, padding:'2px 10px', borderRadius:4, background:'var(--rdb)', color:'var(--rd)', fontWeight:600, letterSpacing:'0.02em', display:'inline-block', minWidth:50, textAlign:'center' }}>!</span>}
+                  </td>
+                  <td onClick={e=>requestDelete(e,t)} style={{ cursor:'pointer' }}>
+                    <button className="btn-ghost" style={{ padding:'2px 5px', fontSize:13, color:'var(--stone)' }}>×</button>
+                  </td>
+                </tr>
+              );
+            })}
+            {ft.length===0&&(
+              <tr><td colSpan={accountTab===null?9:8} style={{ textAlign:'center', padding:24, color:'var(--stone)' }}>
+                {accountTab==='unlinked'?'No unlinked transactions — all transactions are assigned to a bank account.':accountTab&&baseFt.length===0?'No transactions linked to this account.':'No transactions match your filters.'}
+              </td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {detailId!==null&&<TransactionModal txnId={detailId} onClose={()=>setDetailId(null)} />}
+      {showAdd&&<AddTransactionModal onClose={()=>setShowAdd(false)} />}
+      <DeleteToast txn={pendingDelete} onConfirm={confirmDelete} onCancel={()=>setPendingDelete(null)} />
+      {rulePrompt&&(
+        <MakeRulePrompt desc={rulePrompt.desc} catLabel={rulePrompt.catLabel}
+          onAccept={acceptRule} onDismiss={()=>setRulePrompt(null)}
+          onNeverShow={()=>{setSessionPref('suppress_rule_prompt',true);setRulePrompt(null);}} />
+      )}
+    </>
+  );
+}
