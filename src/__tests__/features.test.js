@@ -47,7 +47,11 @@ describe('ImportStatement', () => {
   it('PDF parsing',            () => expect(has(f,'parsePDF')).toBe(true));
   it('CSV parsing',            () => expect(has(f,'parseCSVText')).toBe(true));
   it('new payee discovery',    () => expect(has(f,'newPayeesFound')).toBe(true));
-  it('reconciliation',         () => expect(has(f,'reconciliation')).toBe(true));
+  it('multi-file input',       () => expect(has(f,'multiple')).toBe(true));
+  it('parsedFiles state',      () => expect(has(f,'parsedFiles')).toBe(true));
+  it('per-file section headers',() => expect(has(f,'_fileIdx')).toBe(true));
+  it('add more files button',  () => expect(has(f,'Add more files')).toBe(true));
+  it('remove individual file', () => expect(has(f,'keysToRemove')).toBe(true));
 });
 
 describe('BankAccounts', () => {

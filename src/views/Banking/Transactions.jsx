@@ -368,9 +368,6 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
   const [search,        setSearch]        = useState('');
   const [typeFilter,    setTypeFilter]    = useState('');
   const [payeeFilter,   setPayeeFilter]   = useState('');
-  const [catFilter,     setCatFilter]     = useState('');
-  const [sortCol,       setSortCol]       = useState('date');
-  const [sortDir,       setSortDir]       = useState('desc');
   const [selected,      setSelected]      = useState(new Set());
   const [bulkCatDD,     setBulkCatDD]     = useState(false);
   const [detailId,      setDetailId]      = useState(null);
@@ -448,19 +445,7 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
   if (typeFilter==='in')  ft = ft.filter(t=>t.amt>0);
   if (typeFilter==='out') ft = ft.filter(t=>t.amt<0);
   if (payeeFilter)        ft = ft.filter(t=>t.payee===payeeFilter);
-  if (catFilter)          ft = ft.filter(t=>t.cat===catFilter);
-  ft = [...ft].sort((a, b) => {
-    let av, bv;
-    if      (sortCol==='date')    { av=a.date; bv=b.date; }
-    else if (sortCol==='payee')   { av=(a.payee||'').toLowerCase(); bv=(b.payee||'').toLowerCase(); }
-    else if (sortCol==='cat')     { av=(catMap[a.cat]?.l||'').toLowerCase(); bv=(catMap[b.cat]?.l||'').toLowerCase(); }
-    else if (sortCol==='amt')     { av=a.amt??0; bv=b.amt??0; }
-    else if (sortCol==='account') { av=((accounts||[]).find(x=>x.id===a.account_id)?.name||'').toLowerCase(); bv=((accounts||[]).find(x=>x.id===b.account_id)?.name||'').toLowerCase(); }
-    else                          { av=a.date; bv=b.date; }
-    if (av<bv) return sortDir==='asc'?-1:1;
-    if (av>bv) return sortDir==='asc'?1:-1;
-    return 0;
-  });
+  ft = [...ft].sort((a,b)=>b.date.localeCompare(a.date));
 
   if (typeof window!=='undefined') window.__ledgerFt = ft;
 
@@ -555,11 +540,6 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
       toast(`Rule: "${keyword}" → ${catLabel}`);
     }catch(e){toast('Could not save: '+e.message);}
     setRulePrompt(null);
-  }
-
-  function toggleSort(col) {
-    if (sortCol===col) setSortDir(d=>d==='asc'?'desc':'asc');
-    else { setSortCol(col); setSortDir(col==='date'?'desc':'asc'); }
   }
 
   function toggleSelect(e,id){
@@ -661,14 +641,6 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
             <option value="">All payees</option>
             {(payees||[]).map(p=><option key={p.id} value={p.name}>{p.name}</option>)}
           </select>
-          <select value={catFilter} onChange={e=>setCatFilter(e.target.value)}>
-            <option value="">All categories</option>
-            {CAT_TYPE_ORDER.filter(t=>catsByType[t]?.length>0).map(t=>(
-              <optgroup key={t} label={CAT_TYPE_LABELS[t]}>
-                {catsByType[t].map(c=><option key={c.id} value={c.id}>{c.l}</option>)}
-              </optgroup>
-            ))}
-          </select>
           {selected.size>0?(
             <div style={{ marginLeft:'auto', display:'flex', alignItems:'center', gap:8 }}>
               <span style={{ fontSize:12, color:'var(--stone)' }}>{selected.size} selected</span>
@@ -734,22 +706,12 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
           <thead>
             <tr>
               <th />
-              <th style={{ cursor:'pointer', userSelect:'none', whiteSpace:'nowrap' }} onClick={()=>toggleSort('date')}>
-                Date {sortCol==='date'&&(sortDir==='asc'?'↑':'↓')}
-              </th>
+              <th>Date</th>
               <th>Description</th>
-              <th style={{ cursor:'pointer', userSelect:'none', whiteSpace:'nowrap' }} onClick={()=>toggleSort('payee')}>
-                Payee {sortCol==='payee'&&(sortDir==='asc'?'↑':'↓')}
-              </th>
-              <th style={{ cursor:'pointer', userSelect:'none', whiteSpace:'nowrap' }} onClick={()=>toggleSort('cat')}>
-                Category {sortCol==='cat'&&(sortDir==='asc'?'↑':'↓')}
-              </th>
-              <th className="tr" style={{ cursor:'pointer', userSelect:'none', whiteSpace:'nowrap' }} onClick={()=>toggleSort('amt')}>
-                Amount {sortCol==='amt'&&(sortDir==='asc'?'↑':'↓')}
-              </th>
-              {accountTab===null&&<th style={{ cursor:'pointer', userSelect:'none', whiteSpace:'nowrap' }} onClick={()=>toggleSort('account')}>
-                Account {sortCol==='account'&&(sortDir==='asc'?'↑':'↓')}
-              </th>}
+              <th>Payee</th>
+              <th>Category</th>
+              <th className="tr">Amount</th>
+              {accountTab===null&&<th>Account</th>}
               <th style={{ textAlign:'center' }}>Status</th>
               <th />
             </tr>
@@ -765,7 +727,7 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
                 <tr key={t.id}
                   style={{ cursor:'default',
                     background: isSelected ? 'rgba(186,117,23,0.15)' : t.cat ? '#FAF3E4' : '#FDFAF6',
-                    opacity: justAllocated.has(t.id) ? 0.3 : 1,
+                    opacity: justAllocated.has(t.id) ? 0.3 : t.cat ? 0.68 : 1,
                     transition: justAllocated.has(t.id) ? 'opacity 1s ease' : 'opacity 0.12s',
                   }}>
                   <td onClick={e=>toggleSelect(e,t.id)} style={{ cursor:'pointer' }}>

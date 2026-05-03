@@ -84,8 +84,8 @@ export function Sidebar({ currentView, onNavigate, badges = {}, user, orgName, o
 
       {/* Nav */}
       <nav className="sb-nav">
-        {NAV_GROUPS.map(group => (
-          <div className="sb-group" key={group.label || 'top'}>
+        {NAV_GROUPS.map((group, gi) => (
+          <div className="sb-group" key={group.label || `group-${gi}`}>
             {group.label && <div className="sb-gl">{group.label}</div>}
             {group.items.map(item => (
               <div

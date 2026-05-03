@@ -123,7 +123,7 @@ const TYPE_LABELS = { asset:'Assets', liability:'Liabilities', equity:'Equity', 
 const TYPE_COLOURS = { asset:'#185FA5', liability:'#A32D2D', equity:'#534AB7', income:'#3B6D11', expense:'#BA7517' };
 
 // ── Drill panel ───────────────────────────────────────────────────────────────
-function DrillPanel({ cat, txns, setTxns, catMap, cats, dateFrom, dateTo, onClose, toast }) {
+function DrillPanel({ cat, txns, setTxns, catMap, cats, dateFrom, dateTo, onClose, onEdit, toast }) {
   const catTxns = filterByDateRange(txns, dateFrom, dateTo)
     .filter(t => t.cat === cat.id)
     .sort((a,b) => b.date.localeCompare(a.date));
@@ -132,17 +132,21 @@ function DrillPanel({ cat, txns, setTxns, catMap, cats, dateFrom, dateTo, onClos
   const [editId,    setEditId]    = useState(null);
   const [editDesc,  setEditDesc]  = useState('');
   const [editNote,  setEditNote]  = useState('');
+  const [editCat,   setEditCat]   = useState('');  // reassign category
 
   async function saveEdit(txn) {
-    await updateTransaction(txn.id, { description: editDesc, note: editNote || null });
-    // Update local state so the panel refreshes without reload
+    const updates = { description: editDesc, note: editNote || null };
+    // If category changed, reassign and the transaction will leave this panel
+    if (editCat && editCat !== txn.cat) updates.category_id = editCat;
+    await updateTransaction(txn.id, updates);
     if (setTxns) {
       setTxns(prev => prev.map(t => t.id === txn.id
-        ? { ...t, desc: editDesc, description: editDesc, note: editNote || null }
+        ? { ...t, desc: editDesc, description: editDesc, note: editNote || null,
+            cat: editCat || t.cat, category_id: editCat || t.cat }
         : t
       ));
     }
-    toast('Transaction updated.');
+    toast(editCat && editCat !== txn.cat ? 'Transaction re-categorised.' : 'Transaction updated.');
     setEditId(null);
   }
 
@@ -155,6 +159,7 @@ function DrillPanel({ cat, txns, setTxns, catMap, cats, dateFrom, dateTo, onClos
           <div style={{ fontWeight:500, fontSize:14 }}>{cat.l}</div>
           <div style={{ fontSize:11, color:'var(--stone)', marginTop:1 }}>{cat.ac} · {cat.t}</div>
         </div>
+        <button className="btn btn-sm" onClick={onEdit} style={{ marginRight:4 }}>Edit account</button>
         <button onClick={onClose} style={{ background:'none', border:'none', cursor:'pointer', fontSize:20, color:'var(--stone)', lineHeight:1, padding:0 }}>×</button>
       </div>
 
@@ -184,7 +189,23 @@ function DrillPanel({ cat, txns, setTxns, catMap, cats, dateFrom, dateTo, onClos
                 <input value={editDesc} onChange={e=>setEditDesc(e.target.value)}
                   style={{ width:'100%', padding:'5px 8px', fontSize:12.5, border:'0.5px solid var(--a)', borderRadius:'var(--rr)', marginBottom:6, fontFamily:'var(--font-sans)' }} />
                 <input value={editNote} onChange={e=>setEditNote(e.target.value)} placeholder="Note (optional)"
-                  style={{ width:'100%', padding:'4px 8px', fontSize:12, border:'0.5px solid var(--bd2)', borderRadius:'var(--rr)', marginBottom:8, fontFamily:'var(--font-sans)' }} />
+                  style={{ width:'100%', padding:'4px 8px', fontSize:12, border:'0.5px solid var(--bd2)', borderRadius:'var(--rr)', marginBottom:6, fontFamily:'var(--font-sans)' }} />
+                {/* Re-categorise — move transaction to a different account */}
+                <div style={{ marginBottom:8 }}>
+                  <label style={{ fontSize:11, color:'var(--stone)', fontWeight:500, display:'block', marginBottom:3 }}>Re-categorise to</label>
+                  <select value={editCat} onChange={e=>setEditCat(e.target.value)}
+                    style={{ width:'100%', padding:'5px 8px', fontSize:12, border:'0.5px solid var(--bd2)', borderRadius:'var(--rr)', background:'#FDFAF6', fontFamily:'var(--font-sans)', color:'var(--ink)' }}>
+                    <option value="">— Keep current ({cat.l}) —</option>
+                    {(cats||[]).filter(c2=>c2.id!==cat.id).sort((a,b)=>a.l.localeCompare(b.l)).map(c2=>(
+                      <option key={c2.id} value={c2.id}>{c2.l} ({c2.t})</option>
+                    ))}
+                  </select>
+                  {editCat && editCat !== t.cat && (
+                    <div style={{ fontSize:10.5, color:'var(--a2)', marginTop:3 }}>
+                      ↪ This transaction will move to the selected account
+                    </div>
+                  )}
+                </div>
                 <div style={{ display:'flex', gap:6 }}>
                   <button className="btn btn-a btn-sm" onClick={()=>saveEdit(t)}>Save</button>
                   <button className="btn btn-sm" onClick={()=>setEditId(null)}>Cancel</button>
@@ -203,7 +224,7 @@ function DrillPanel({ cat, txns, setTxns, catMap, cats, dateFrom, dateTo, onClos
                   </div>
                 </div>
                 <button className="btn-ghost" style={{ fontSize:11, color:'var(--stone)', padding:'2px 6px', flexShrink:0 }}
-                  onClick={()=>{ setEditId(t.id); setEditDesc(t.desc); setEditNote(t.note||''); }}>
+                  onClick={()=>{ setEditId(t.id); setEditDesc(t.desc); setEditNote(t.note||''); setEditCat(''); }}>
                   Edit
                 </button>
               </div>
@@ -493,6 +514,7 @@ export function ChartOfAccounts() {
           dateFrom={dateFrom}
           dateTo={dateTo}
           onClose={() => setDrillCat(null)}
+          onEdit={() => { openEdit(drillCat); setDrillCat(null); }}
           toast={toast}
         />
       )}
@@ -553,6 +575,11 @@ export function ChartOfAccounts() {
                   <select value={form.type||'expense'} onChange={e => f('type',e.target.value)}>
                     {TYPE_ORDER.map(t => <option key={t} value={t}>{TYPE_LABELS[t]}</option>)}
                   </select>
+                  {editingId !== 'new' && form.type !== cats.find(c=>c.id===editingId)?.t && (
+                    <div style={{ marginTop:5, padding:'5px 8px', background:'var(--al)', borderRadius:'var(--rr)', fontSize:11, color:'var(--a2)' }}>
+                      ⚠ Changing type will affect how this account appears in reports (P&L, Balance Sheet).
+                    </div>
+                  )}
                 </div>
                 <div className="field">
                   <label>Group</label>
