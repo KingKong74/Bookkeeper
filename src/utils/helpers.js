@@ -319,3 +319,111 @@ export function isTBBalanced(tbRows) {
   const totalCR = (tbRows || []).reduce((s, r) => s + r.cr, 0);
   return Math.abs(totalDR - totalCR) < 0.01;
 }
+
+/**
+ * buildPLFromJournals(journals, dateFrom, dateTo, catMap, accountMap)
+ * -------------------------------------------------------------------
+ * Build P&L lines from posted journal lines.
+ * Income lines: accounts whose category type = 'income'  → CR dominant
+ * Expense lines: accounts whose category type = 'expense' → DR dominant
+ *
+ * Returns { incomeLines, expenseLines, totalIncome, totalExpense, netProfit }
+ * where totalIncome is a positive number and totalExpense is a positive number.
+ */
+export function buildPLFromJournals(journals, dateFrom, dateTo, catMap, accountMap = {}) {
+  const map = {};
+
+  (journals || []).forEach(journal => {
+    if (!journal?.date || journal.date < dateFrom || journal.date > dateTo) return;
+
+    (journal.journal_lines || journal.lines || []).forEach(line => {
+      if (!line.category_id) return; // skip bank/suspense lines
+      const cat = catMap[line.category_id];
+      if (!cat) return;
+      if (cat.t !== 'income' && cat.t !== 'expense') return;
+
+      const key = cat.id;
+      if (!map[key]) map[key] = { ...cat, total: 0, dr: 0, cr: 0 };
+      map[key].dr += parseFloat(line.debit)  || 0;
+      map[key].cr += parseFloat(line.credit) || 0;
+      // Net: income accounts are credit-normal, expense accounts are debit-normal
+      map[key].total = map[key].cr - map[key].dr;
+    });
+  });
+
+  const lines        = Object.values(map);
+  const incomeLines  = lines.filter(c => c.t === 'income' && (c.cr - c.dr) > 0);
+  const expenseLines = lines.filter(c => c.t === 'expense' && (c.dr - c.cr) > 0);
+
+  const totalIncome  = incomeLines.reduce((s, c) => s + (c.cr - c.dr), 0);
+  const totalExpense = expenseLines.reduce((s, c) => s + (c.dr - c.cr), 0);
+  const netProfit    = totalIncome - totalExpense;
+
+  return { incomeLines, expenseLines, totalIncome, totalExpense, netProfit, allLines: lines };
+}
+
+/**
+ * buildBSFromJournals(journals, dateFrom, dateTo, catMap, accountMap, accounts)
+ * ------------------------------------------------------------------------------
+ * Build Balance Sheet from posted journal lines.
+ *
+ * Assets     = accounts with category type 'asset' + bank account (DR-normal)
+ * Liabilities = accounts with category type 'liability' (CR-normal)
+ * Equity     = Assets - Liabilities (residual — always balances)
+ *
+ * Returns { assetLines, liabilityLines, equityLines,
+ *           totalAssets, totalLiabilities, totalEquity, balanced }
+ */
+export function buildBSFromJournals(journals, dateFrom, dateTo, catMap, accountMap = {}) {
+  const catBalances  = {};  // category-based accounts
+  const bankBalances = {};  // bank account lines
+
+  (journals || []).forEach(journal => {
+    // Balance Sheet is CUMULATIVE (all time to dateTo), so only filter by dateTo
+    if (!journal?.date || journal.date > dateTo) return;
+
+    (journal.journal_lines || journal.lines || []).forEach(line => {
+      const dr = parseFloat(line.debit)  || 0;
+      const cr = parseFloat(line.credit) || 0;
+
+      if (line.category_id && catMap[line.category_id]) {
+        const cat = catMap[line.category_id];
+        if (!['asset','liability','equity'].includes(cat.t)) return;
+        if (!catBalances[cat.id]) catBalances[cat.id] = { ...cat, dr: 0, cr: 0 };
+        catBalances[cat.id].dr += dr;
+        catBalances[cat.id].cr += cr;
+      } else if (line.bank_account_id && accountMap[line.bank_account_id]) {
+        const acct = accountMap[line.bank_account_id];
+        if (!bankBalances[acct.id]) bankBalances[acct.id] = { ...acct, dr: 0, cr: 0, type: acct.type };
+        bankBalances[acct.id].dr += dr;
+        bankBalances[acct.id].cr += cr;
+      }
+    });
+  });
+
+  // Net = DR - CR for asset/expense accounts (debit-normal)
+  //       CR - DR for liability/equity/income accounts (credit-normal)
+  const catLines  = Object.values(catBalances).map(c => ({ ...c, net: c.t==='asset' ? c.dr-c.cr : c.cr-c.dr }));
+  const bankLines = Object.values(bankBalances).map(b => {
+    // Bank accounts: checking/savings/investment are assets (DR-normal)
+    // CC/loans are liabilities (CR-normal)
+    const isLiab = b.type === 'credit_card' || b.type === 'loan';
+    return { ...b, l: b.name, t: isLiab ? 'liability' : 'asset', col: b.colour || '#185FA5', net: isLiab ? b.cr-b.dr : b.dr-b.cr };
+  });
+
+  const allLines        = [...catLines, ...bankLines].filter(l => l.net !== 0);
+  const assetLines      = allLines.filter(l => l.t === 'asset');
+  const liabilityLines  = allLines.filter(l => l.t === 'liability');
+  const equityLines     = allLines.filter(l => l.t === 'equity');
+
+  const totalAssets      = assetLines.reduce((s, l) => s + l.net, 0);
+  const totalLiabilities = liabilityLines.reduce((s, l) => s + l.net, 0);
+  const totalEquity      = totalAssets - totalLiabilities; // always balances
+  const balanced         = Math.abs(totalAssets - (totalLiabilities + totalEquity)) < 0.01;
+
+  return {
+    assetLines, liabilityLines, equityLines,
+    totalAssets, totalLiabilities, totalEquity, totalLE: totalLiabilities + totalEquity,
+    balanced,
+  };
+}

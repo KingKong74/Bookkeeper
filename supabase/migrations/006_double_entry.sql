@@ -46,3 +46,11 @@ END $$;
 ALTER TABLE journal_lines
   ADD COLUMN IF NOT EXISTS category_id    UUID REFERENCES categories(id)    ON DELETE SET NULL,
   ADD COLUMN IF NOT EXISTS bank_account_id UUID REFERENCES bank_accounts(id) ON DELETE SET NULL;
+
+-- Add transaction_id to journal_lines so we can find/remove lines per transaction
+-- when a transaction is re-categorised (in the single general ledger model)
+ALTER TABLE journal_lines
+  ADD COLUMN IF NOT EXISTS transaction_id UUID REFERENCES transactions(id) ON DELETE CASCADE;
+
+CREATE INDEX IF NOT EXISTS journal_lines_transaction
+  ON journal_lines(transaction_id) WHERE transaction_id IS NOT NULL;

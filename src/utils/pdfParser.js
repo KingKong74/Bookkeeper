@@ -135,8 +135,25 @@ function extractSummary(pages) {
   const opening = flat.match(/opening\s+balance[^$\d]*\$?([\d,]+\.\d{2})/i);
   const closing = flat.match(/closing\s+balance[^$\d]*\$?([\d,]+\.\d{2})/i);
 
+  // Parse periodStart as ISO date for opening balance comparison
+  let periodStart = null;
+  if (p1) {
+    try {
+      const d = new Date(p1[1]);
+      if (!isNaN(d)) periodStart = d.toISOString().slice(0,10);
+    } catch(e) {}
+  } else if (p2) {
+    try {
+      // p2 is dd/mm/yyyy format
+      const [dd, mm, yyyy] = p2[1].split('/');
+      const yr = yyyy.length === 2 ? '20'+yyyy : yyyy;
+      periodStart = `${yr}-${mm.padStart(2,'0')}-${dd.padStart(2,'0')}`;
+    } catch(e) {}
+  }
+
   return {
     period:         p1 ? `${p1[1]} – ${p1[2]}` : (p2 ? `${p2[1]} – ${p2[2]}` : null),
+    periodStart,
     openingBalance: opening ? parseFloat(opening[1].replace(/,/g,'')) : null,
     closingBalance: closing ? parseFloat(closing[1].replace(/,/g,'')) : null,
     endYear,

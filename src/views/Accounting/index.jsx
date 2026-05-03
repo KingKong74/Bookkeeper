@@ -11,6 +11,7 @@ import React, { useState, useMemo } from 'react';
 import { useApp } from '../../context/AppContext';
 import { createCategory, updateCategory, deleteCategory, createRule, updateRule, deleteRule } from '../../lib/supabase';
 import { fmt, filterByDateRange } from '../../utils/helpers';
+import { PeriodBar } from '../../components/ui/PeriodBar';
 
 
 export function Categories() {

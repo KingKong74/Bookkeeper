@@ -270,7 +270,7 @@ export function Journals() {
                     <div key={i} style={{ padding:'4px 10px', fontSize:10, fontWeight:500, color:'var(--stone)', textTransform:'uppercase', letterSpacing:'0.05em', textAlign:i>0?'right':'left' }}>{h}</div>
                   ))}
                 </div>
-                {(j.lines||[]).map((l,i) => (
+                {(j.journal_lines||j.lines||[]).map((l,i) => (
                   <div key={i} style={{ display:'grid', gridTemplateColumns:'1fr 100px 100px', borderTop:'0.5px solid var(--bd)' }}>
                     <div style={{ padding:'5px 10px', fontSize:12 }}>{l.account_name||l.ac||'—'}</div>
                     <div style={{ padding:'5px 10px', fontSize:12, textAlign:'right', fontVariantNumeric:'tabular-nums' }}>{parseFloat(l.debit||l.dr)>0?fmt(parseFloat(l.debit||l.dr)):'—'}</div>
@@ -279,8 +279,8 @@ export function Journals() {
                 ))}
                 <div style={{ display:'grid', gridTemplateColumns:'1fr 100px 100px', borderTop:'0.5px solid var(--bd2)', background:'var(--sand)' }}>
                   <div style={{ padding:'5px 10px', fontSize:12, fontWeight:500 }}>Total</div>
-                  <div style={{ padding:'5px 10px', fontSize:12, fontWeight:500, textAlign:'right', fontVariantNumeric:'tabular-nums' }}>{fmt((j.lines||[]).reduce((s,l)=>s+(parseFloat(l.debit||l.dr)||0),0))}</div>
-                  <div style={{ padding:'5px 10px', fontSize:12, fontWeight:500, textAlign:'right', fontVariantNumeric:'tabular-nums' }}>{fmt((j.lines||[]).reduce((s,l)=>s+(parseFloat(l.credit||l.cr)||0),0))}</div>
+                  <div style={{ padding:'5px 10px', fontSize:12, fontWeight:500, textAlign:'right', fontVariantNumeric:'tabular-nums' }}>{fmt((j.journal_lines||j.lines||[]).reduce((s,l)=>s+(parseFloat(l.debit||l.dr)||0),0))}</div>
+                  <div style={{ padding:'5px 10px', fontSize:12, fontWeight:500, textAlign:'right', fontVariantNumeric:'tabular-nums' }}>{fmt((j.journal_lines||j.lines||[]).reduce((s,l)=>s+(parseFloat(l.credit||l.cr)||0),0))}</div>
                 </div>
               </div>
             </div>

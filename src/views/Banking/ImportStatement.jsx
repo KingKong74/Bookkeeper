@@ -8,7 +8,7 @@ import React, { useState, useMemo, useRef } from 'react';
 import { useApp } from '../../context/AppContext';
 import { parseCSVText, autoDetectColumns, buildTransactions } from '../../utils/csvParser';
 import { parsePDF } from '../../utils/pdfParser';
-import { bulkImportTransactions, upsertPayee } from '../../lib/supabase';
+import { bulkImportTransactions, upsertPayee, updateBankAccount } from '../../lib/supabase';
 import { fmt, runAutoCatRules } from '../../utils/helpers';
 
 const fmtAmt = n => (n >= 0 ? '+' : '') + '$' + Math.abs(n).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
@@ -58,7 +58,7 @@ function calcRecon(pf, excludedKeys) {
 }
 
 export function ImportStatement({ onNavigate }) {
-  const { txns, catMap, rules, payees, setPayees, setTxns, toast, org, accounts: _accts, PALETTE } = useApp();
+  const { txns, catMap, rules, payees, setPayees, setTxns, toast, org, accounts: _accts, setAccounts, PALETTE } = useApp();
   const accounts = _accts || [];
 
   const [step,            setStep]           = useState('upload');   // 'upload' | 'review'
@@ -148,6 +148,31 @@ export function ImportStatement({ onNavigate }) {
         }
       });
       if (newPayeeNames.size > 0) setNewPayeesFound([...newPayeeNames]);
+
+      // Update bank account opening balance from earliest imported statement
+      if (selectedAccount) {
+        const summaries = parsedFiles.map(pf => pf.summary).filter(
+          s => s && s.openingBalance != null && s.periodStart
+        );
+        if (summaries.length > 0) {
+          const earliest = summaries.reduce((best, s) =>
+            !best || s.periodStart < best.periodStart ? s : best, null
+          );
+          try {
+            const acct = (accounts||[]).find(a => a.id === selectedAccount);
+            if (acct && earliest && (!acct.opening_date || earliest.periodStart < acct.opening_date)) {
+              const updated = await updateBankAccount(selectedAccount, {
+                opening_balance: earliest.openingBalance,
+                opening_date:    earliest.periodStart,
+              });
+              if (updated && setAccounts) {
+                setAccounts(prev => prev.map(a => a.id===selectedAccount ? {...a,...updated} : a));
+              }
+              parts.push(`Opening balance updated to $${Math.abs(earliest.openingBalance).toFixed(2)}`);
+            }
+          } catch(e) { console.warn('Opening balance update failed:', e.message); }
+        }
+      }
 
       toast(parts.join(' · ') + '.');
 

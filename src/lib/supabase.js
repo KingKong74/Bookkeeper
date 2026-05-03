@@ -586,75 +586,113 @@ import { buildJournalLines } from '../utils/helpers.js';
 export { buildJournalLines };
 
 /**
+ * getOrCreateDailyLedger(orgId)
+ * --------------------------------
+ * Returns the single "General Ledger — Auto Allocations" journal entry
+ * for this org, creating it if it doesn't exist yet.
+ * ALL auto-posted category journal lines go into this one entry as a running ledger.
+ */
+async function getOrCreateDailyLedger(orgId) {
+  // Look for existing master auto-category journal
+  const { data: existing } = await supabase
+    .from('journal_entries')
+    .select('id, source')
+    .eq('org_id', orgId)
+    .eq('source', 'auto_category')
+    .order('created_at', { ascending: true })
+    .limit(1)
+    .single();
+
+  if (existing) return existing;
+
+  // Create it
+  const { data: created, error } = await supabase
+    .from('journal_entries')
+    .insert({
+      org_id:      orgId,
+      date:        new Date().toISOString().slice(0, 10),
+      description: 'General Ledger — Auto Allocations',
+      source:      'auto_category',
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  return created;
+}
+
+/**
  * postCategoryJournal(orgId, txn, category, bankAccount)
  * -------------------------------------------------------
- * Auto-post a balanced journal entry when a transaction is categorised.
- * Links the journal back to the transaction and vice-versa.
- * If the transaction already has a journal entry, voids it first.
+ * Appends two balanced DR/CR lines to the single "General Ledger" journal.
+ * All auto-category allocations share one journal entry — lines are appended
+ * or removed as categories change. Never creates separate per-transaction entries.
+ *
+ * If category is null → removes existing lines for this transaction.
  */
 export async function postCategoryJournal(orgId, txn, category, bankAccount) {
-  // Void existing auto-posted journal if category is being changed
-  if (txn.journal_entry_id) {
-    await voidAutoJournal(txn.journal_entry_id);
+  // Always use the single master ledger journal
+  const ledger = await getOrCreateDailyLedger(orgId);
+
+  // Remove any existing lines for this transaction (re-categorising)
+  if (txn.journal_entry_id || txn.id) {
+    // Delete lines that reference this transaction via a note or match by txn amounts
+    // We identify them by transaction_id stored on each line (added in migration 006)
+    await supabase
+      .from('journal_lines')
+      .delete()
+      .eq('journal_entry_id', ledger.id)
+      .eq('transaction_id', txn.id);
   }
 
   if (!category) {
-    // Removing category → just clear the link, journal already voided above
-    await supabase
-      .from('transactions')
-      .update({ journal_entry_id: null })
-      .eq('id', txn.id);
+    // Removing category — lines deleted above, clear the link
+    await supabase.from('transactions').update({ journal_entry_id: null }).eq('id', txn.id);
     return null;
   }
 
   const lines = buildJournalLines(txn, category, bankAccount);
 
-  // Create the journal entry
-  const { data: entry, error: entryErr } = await supabase
-    .from('journal_entries')
-    .insert({
-      org_id:         orgId,
-      date:           txn.date,
-      description:    txn.desc ?? txn.description,
-      source:         'auto_category',
-      transaction_id: txn.id,
-    })
-    .select()
-    .single();
-  if (entryErr) throw entryErr;
+  // Get current max sort_order in this ledger
+  const { data: existingLines } = await supabase
+    .from('journal_lines')
+    .select('sort_order')
+    .eq('journal_entry_id', ledger.id)
+    .order('sort_order', { ascending: false })
+    .limit(1);
+  const nextSort = ((existingLines?.[0]?.sort_order ?? -1) + 1);
 
-  // Insert the two lines
+  // Append new lines with transaction_id reference
   const { error: linesErr } = await supabase
     .from('journal_lines')
-    .insert(lines.map(l => ({ ...l, journal_entry_id: entry.id })));
+    .insert(lines.map((l, i) => ({
+      ...l,
+      journal_entry_id: ledger.id,
+      transaction_id:   txn.id,
+      sort_order:       nextSort + i,
+    })));
   if (linesErr) throw linesErr;
 
-  // Link back to transaction
-  await supabase
-    .from('transactions')
-    .update({ journal_entry_id: entry.id })
-    .eq('id', txn.id);
+  // Update master journal date to latest transaction date
+  const txnDate = txn.date ?? txn.date;
+  if (txnDate) {
+    await supabase.from('journal_entries')
+      .update({ date: txnDate, updated_at: new Date().toISOString() })
+      .eq('id', ledger.id);
+  }
 
-  return { ...entry, lines };
+  // Link transaction to the master journal
+  await supabase.from('transactions').update({ journal_entry_id: ledger.id }).eq('id', txn.id);
+
+  return { ...ledger, lines };
 }
 
 /**
- * voidAutoJournal(journalEntryId)
- * --------------------------------
- * Soft-void an auto-generated journal by deleting it.
- * Only voids entries with source='auto_category'.
+ * voidAutoJournal — no-op in the single-ledger model.
+ * Lines are removed from the master ledger via postCategoryJournal(null).
  */
 export async function voidAutoJournal(journalEntryId) {
-  if (!journalEntryId) return;
-  // Only delete if it was auto-generated (never delete manual journals)
-  const { data } = await supabase
-    .from('journal_entries')
-    .select('id, source')
-    .eq('id', journalEntryId)
-    .single();
-  if (data?.source === 'auto_category') {
-    await supabase.from('journal_entries').delete().eq('id', journalEntryId);
-  }
+  // No-op: single ledger is never deleted, lines are removed individually
+  return;
 }
 
 /**

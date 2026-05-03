@@ -265,3 +265,104 @@ describe('E2E: journal lines → trial balance always balances', () => {
     }
   });
 });
+
+// ── buildPLFromJournals() ─────────────────────────────────────────────────────
+import { buildPLFromJournals, buildBSFromJournals } from '../utils/helpers.js';
+
+const plCatMap = {
+  'c-sal':  { id:'c-sal',  l:'Salary',    t:'income',  col:'#3B6D11' },
+  'c-int':  { id:'c-int',  l:'Interest',  t:'income',  col:'#1D9E75' },
+  'c-rent': { id:'c-rent', l:'Rent',      t:'expense', col:'#993C1D' },
+  'c-groc': { id:'c-groc', l:'Groceries', t:'expense', col:'#BA7517' },
+  'c-car':  { id:'c-car',  l:'Motor Vehicle', t:'asset', col:'#185FA5' },
+  'c-loan': { id:'c-loan', l:'Bank Loan', t:'liability', col:'#A32D2D' },
+};
+const plAcctMap = { 'ba-1':{ id:'ba-1', name:'ANZ Flex Saver', type:'savings', colour:'#185FA5' } };
+
+const salaryJournal = { id:'j1', date:'2026-03-15', source:'auto_category', journal_lines:[
+  { debit:5000, credit:0,    category_id:null,    bank_account_id:'ba-1' },
+  { debit:0,    credit:5000, category_id:'c-sal', bank_account_id:null   },
+]};
+const rentJournal = { id:'j2', date:'2026-03-02', source:'auto_category', journal_lines:[
+  { debit:1800, credit:0,    category_id:'c-rent', bank_account_id:null   },
+  { debit:0,    credit:1800, category_id:null,     bank_account_id:'ba-1' },
+]};
+const grocJournal = { id:'j3', date:'2026-03-07', source:'auto_category', journal_lines:[
+  { debit:87.32, credit:0,    category_id:'c-groc', bank_account_id:null   },
+  { debit:0,     credit:87.32,category_id:null,     bank_account_id:'ba-1' },
+]};
+const interestJournal = { id:'j4', date:'2026-04-01', source:'auto_category', journal_lines:[
+  { debit:19.88, credit:0,    category_id:null,    bank_account_id:'ba-1' },
+  { debit:0,     credit:19.88,category_id:'c-int', bank_account_id:null   },
+]};
+
+describe('buildPLFromJournals()', () => {
+  const journals = [salaryJournal, rentJournal, grocJournal];
+  const pl = buildPLFromJournals(journals,'2026-03-01','2026-03-31',plCatMap,plAcctMap);
+
+  it('returns incomeLines array',                () => expect(Array.isArray(pl.incomeLines)).toBe(true));
+  it('returns expenseLines array',               () => expect(Array.isArray(pl.expenseLines)).toBe(true));
+  it('salary appears in income lines',           () => expect(pl.incomeLines.find(l=>l.id==='c-sal')).toBeDefined());
+  it('rent appears in expense lines',            () => expect(pl.expenseLines.find(l=>l.id==='c-rent')).toBeDefined());
+  it('groceries appears in expense lines',       () => expect(pl.expenseLines.find(l=>l.id==='c-groc')).toBeDefined());
+  it('totalIncome = $5,000',                     () => expect(pl.totalIncome).toBe(5000));
+  it('totalExpense = $1,887.32',                 () => expect(pl.totalExpense).toBeCloseTo(1887.32, 2));
+  it('netProfit = totalIncome - totalExpense',   () => expect(pl.netProfit).toBeCloseTo(5000 - 1887.32, 2));
+  it('netProfit is positive (profitable)',        () => expect(pl.netProfit).toBeGreaterThan(0));
+  it('date filter excludes April journal',        () => {
+    const plWithApril = buildPLFromJournals([...journals, interestJournal],'2026-03-01','2026-03-31',plCatMap,plAcctMap);
+    expect(plWithApril.incomeLines.find(l=>l.id==='c-int')).toBeUndefined();
+  });
+  it('bank account lines excluded from P&L',     () => expect(pl.incomeLines.find(l=>l.l==='ANZ Flex Saver')).toBeUndefined());
+  it('empty journals returns zeros',             () => {
+    const empty = buildPLFromJournals([],'2026-01-01','2026-12-31',plCatMap);
+    expect(empty.totalIncome).toBe(0);
+    expect(empty.totalExpense).toBe(0);
+    expect(empty.netProfit).toBe(0);
+  });
+  it('netProfit = totalIncome - totalExpense algebraically', () => {
+    expect(Math.abs(pl.netProfit - (pl.totalIncome - pl.totalExpense))).toBeLessThan(0.01);
+  });
+});
+
+// ── buildBSFromJournals() ─────────────────────────────────────────────────────
+const carJournal = { id:'j5', date:'2025-12-01', source:'auto_category', journal_lines:[
+  { debit:25000, credit:0,    category_id:'c-car', bank_account_id:null   },
+  { debit:0,     credit:25000,category_id:null,    bank_account_id:'ba-1' },
+]};
+const loanJournal = { id:'j6', date:'2025-12-01', source:'auto_category', journal_lines:[
+  { debit:0,     credit:20000,category_id:'c-loan',bank_account_id:null   },
+  { debit:20000, credit:0,    category_id:null,    bank_account_id:'ba-1' },
+]};
+
+describe('buildBSFromJournals()', () => {
+  const journals = [salaryJournal, rentJournal, grocJournal, carJournal, loanJournal];
+  const bs = buildBSFromJournals(journals,'2000-01-01','2026-03-31',plCatMap,plAcctMap);
+
+  it('returns assetLines array',                 () => expect(Array.isArray(bs.assetLines)).toBe(true));
+  it('returns liabilityLines array',             () => expect(Array.isArray(bs.liabilityLines)).toBe(true));
+  it('motor vehicle is an asset',                () => expect(bs.assetLines.find(l=>l.id==='c-car')).toBeDefined());
+  it('bank loan is a liability',                 () => expect(bs.liabilityLines.find(l=>l.id==='c-loan')).toBeDefined());
+  it('totalAssets > 0',                         () => expect(bs.totalAssets).toBeGreaterThan(0));
+  it('totalLiabilities > 0',                    () => expect(bs.totalLiabilities).toBeGreaterThan(0));
+  it('Assets = Liabilities + Equity (always)',   () => expect(Math.abs(bs.totalAssets - bs.totalLE)).toBeLessThan(0.01));
+  it('totalEquity = totalAssets - totalLiab',    () => expect(Math.abs(bs.totalEquity - (bs.totalAssets - bs.totalLiabilities))).toBeLessThan(0.01));
+  it('balanced flag is true',                    () => expect(bs.balanced).toBe(true));
+  it('cumulative: includes pre-period assets',   () => {
+    // Car purchased Dec 2025, BS as of March 2026 should still include it
+    const bsMar = buildBSFromJournals([carJournal],'2000-01-01','2026-03-31',plCatMap,plAcctMap);
+    expect(bsMar.assetLines.find(l=>l.id==='c-car')).toBeDefined();
+  });
+  it('empty journals: all zeros',                () => {
+    const empty = buildBSFromJournals([],'2000-01-01','2026-12-31',plCatMap);
+    expect(empty.totalAssets).toBe(0);
+    expect(empty.totalLiabilities).toBe(0);
+    expect(empty.totalEquity).toBe(0);
+  });
+  it('BS balances with multiple transactions',   () => {
+    for (let i = 1; i <= journals.length; i++) {
+      const partial = buildBSFromJournals(journals.slice(0,i),'2000-01-01','2026-12-31',plCatMap,plAcctMap);
+      expect(partial.balanced).toBe(true);
+    }
+  });
+});

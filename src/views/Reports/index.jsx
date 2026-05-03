@@ -12,7 +12,7 @@ import React, { useState, useMemo } from 'react';
 import { useApp } from '../../context/AppContext';
 import { PeriodBar } from '../../components/ui/PeriodBar';
 import { BalanceAlert, MetricCard, PayeeAvatar } from '../../components/ui/index';
-import { fmt, fmtSigned, filterByDateRange, buildAccountTotals, buildTBFromJournals, isTBBalanced, payeeColor, dateRangeLabel } from '../../utils/helpers';
+import { fmt, fmtSigned, filterByDateRange, buildAccountTotals, buildTBFromJournals, buildPLFromJournals, buildBSFromJournals, isTBBalanced, payeeColor, dateRangeLabel } from '../../utils/helpers';
 
 // ── A4 paper wrapper ──────────────────────────────────────────────────────────
 function A4Paper({ title, subtitle, children }) {
@@ -315,14 +315,24 @@ export function TrialBalance() {
 
 // ── Profit & Loss ─────────────────────────────────────────────────────────────
 export function ProfitAndLoss() {
-  const { txns, catMap, dateFrom, dateTo } = useApp();
+  const { txns, catMap, dateFrom, dateTo, journals, accounts } = useApp();
   const [drill,   setDrill]   = useState(null);
   const [compare, setCompare] = useState('none');
+  const [mode,    setMode]    = useState('journals');
 
+  const priorDates  = getPriorDates(compare, dateFrom, dateTo);
+  const accountMap  = Object.fromEntries((accounts||[]).map(a=>[a.id,a]));
+  const hasJournals = (journals||[]).some(j=>(j.journal_lines||j.lines||[]).some(l=>l.category_id));
+  const useJournals = mode==='journals' && hasJournals;
+
+  // Journal-based (double-entry)
+  const pl   = buildPLFromJournals(journals||[], dateFrom, dateTo, catMap, accountMap);
+  const plP  = priorDates ? buildPLFromJournals(journals||[], priorDates[0], priorDates[1], catMap, accountMap) : null;
+
+  // Transaction-based (legacy)
   const ft  = filterByDateRange(txns, dateFrom, dateTo);
-  const priorDates = getPriorDates(compare, dateFrom, dateTo);
-  const ftP = priorDates ? filterByDateRange(txns, priorDates[0], priorDates[1]) : [];
-
+  const priorDatesT = priorDates;
+  const ftP = priorDatesT ? filterByDateRange(txns, priorDatesT[0], priorDatesT[1]) : [];
   function buildByCat(transactions) {
     const byCat = {};
     transactions.forEach(t => {
@@ -334,19 +344,23 @@ export function ProfitAndLoss() {
     });
     return byCat;
   }
-
   const byCat  = buildByCat(ft);
   const byCatP = compare!=='none' ? buildByCat(ftP) : {};
+  const legacyIncome  = Object.values(byCat).filter(c=>c.t==='income');
+  const legacyExpense = Object.values(byCat).filter(c=>c.t==='expense');
+  const legacyTotalIn = legacyIncome.reduce((s,c)=>s+c.total,0);
+  const legacyTotalEx = legacyExpense.reduce((s,c)=>s+c.total,0);
 
-  const incomeLines  = Object.values(byCat).filter(c => c.t==='income');
-  const expenseLines = Object.values(byCat).filter(c => c.t==='expense');
-  const totalIncome  = incomeLines.reduce((s,c) => s+c.total, 0);
-  const totalExpense = expenseLines.reduce((s,c) => s+c.total, 0);
-  const netProfit    = totalIncome + totalExpense;
+  // Pick source
+  const incomeLines  = useJournals ? pl.incomeLines  : legacyIncome;
+  const expenseLines = useJournals ? pl.expenseLines : legacyExpense;
+  const totalIncome  = useJournals ? pl.totalIncome  : legacyTotalIn;
+  const totalExpense = useJournals ? pl.totalExpense : Math.abs(legacyTotalEx);
+  const netProfit    = useJournals ? pl.netProfit    : (legacyTotalIn + legacyTotalEx);
 
-  const totalIncomeP  = Object.values(byCatP).filter(c=>c.t==='income').reduce((s,c)=>s+c.total,0);
-  const totalExpenseP = Object.values(byCatP).filter(c=>c.t==='expense').reduce((s,c)=>s+c.total,0);
-  const netProfitP    = totalIncomeP + totalExpenseP;
+  const totalIncomeP  = useJournals ? (plP?.totalIncome  ?? 0) : Object.values(byCatP).filter(c=>c.t==='income').reduce((s,c)=>s+c.total,0);
+  const totalExpenseP = useJournals ? (plP?.totalExpense ?? 0) : Math.abs(Object.values(byCatP).filter(c=>c.t==='expense').reduce((s,c)=>s+c.total,0));
+  const netProfitP    = useJournals ? (plP?.netProfit    ?? 0) : (totalIncomeP - totalExpenseP);
 
   const priorLabel = priorDates ? dateRangeLabel(priorDates[0], priorDates[1]) : '';
 
@@ -359,6 +373,20 @@ export function ProfitAndLoss() {
         <MetricCard label="Net profit / (loss)" value={fmt(netProfit)}              valueClass={netProfit>=0?'vp':'vn'} />
         <MetricCard label="Expense ratio"       value={`${totalIncome>0?Math.round(Math.abs(totalExpense)/totalIncome*100):0}%`} valueClass="va" />
       </div>
+      {/* Source toggle */}
+      {hasJournals && (
+        <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:12 }}>
+          <div style={{ display:'flex', borderRadius:'var(--rr)', border:'0.5px solid var(--bd2)', overflow:'hidden' }}>
+            {[['journals','Double-entry ledger'],['transactions','Transactions (legacy)']].map(([m,l])=>(
+              <button key={m} onClick={()=>setMode(m)}
+                style={{ padding:'5px 12px', fontSize:11.5, border:'none', cursor:'pointer', fontFamily:'var(--font-sans)',
+                  background:mode===m?'var(--a)':'#FDFAF6', color:mode===m?'#fff':'var(--stone)', fontWeight:mode===m?500:400 }}>
+                {l}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
       <CompareBar compare={compare} setCompare={setCompare} />
       <A4Paper title="Profit & Loss" subtitle={dateRangeLabel(dateFrom, dateTo)}>
         <div style={{ padding:'20px 0 0' }}>
@@ -366,22 +394,24 @@ export function ProfitAndLoss() {
 
           <StHead>Income</StHead>
           {incomeLines.length===0 && <StRow label="No income in period" value="" indent />}
-          {incomeLines.map(c => (
-            <StRow key={c.id} label={c.l} value={fmt(c.total)}
-              valueB={compare!=='none' ? (byCatP[c.id]?fmt(byCatP[c.id].total):'—') : undefined}
-              indent clickable onClick={() => setDrill(c)} valueClass="vp" />
-          ))}
+          {incomeLines.map(c => {
+            const val = useJournals ? fmt(c.cr - c.dr) : fmt(c.total);
+            const priorC = useJournals ? plP?.incomeLines?.find(x=>x.id===c.id) : byCatP[c.id];
+            const valB = compare!=='none' ? (priorC ? (useJournals?fmt(priorC.cr-priorC.dr):fmt(priorC.total)) : '—') : undefined;
+            return <StRow key={c.id} label={c.l} value={val} valueB={valB} indent clickable onClick={()=>setDrill(c)} valueClass="vp" />;
+          })}
           <StTotal label="Total Income" value={fmt(totalIncome)} valueB={compare!=='none'?fmt(totalIncomeP):undefined} valueClass="vp" />
 
           <div style={{ height:8 }} />
           <StHead>Expenses</StHead>
           {expenseLines.length===0 && <StRow label="No expenses in period" value="" indent />}
-          {expenseLines.map(c => (
-            <StRow key={c.id} label={c.l} value={fmt(Math.abs(c.total))}
-              valueB={compare!=='none' ? (byCatP[c.id]?fmt(Math.abs(byCatP[c.id].total)):'—') : undefined}
-              indent clickable onClick={() => setDrill(c)} valueClass="vn" />
-          ))}
-          <StTotal label="Total Expenses" value={fmt(Math.abs(totalExpense))} valueB={compare!=='none'?fmt(Math.abs(totalExpenseP)):undefined} valueClass="vn" />
+          {expenseLines.map(c => {
+            const val = useJournals ? fmt(c.dr - c.cr) : fmt(Math.abs(c.total));
+            const priorC = useJournals ? plP?.expenseLines?.find(x=>x.id===c.id) : byCatP[c.id];
+            const valB = compare!=='none' ? (priorC ? (useJournals?fmt(priorC.dr-priorC.cr):fmt(Math.abs(priorC.total))) : '—') : undefined;
+            return <StRow key={c.id} label={c.l} value={val} valueB={valB} indent clickable onClick={()=>setDrill(c)} valueClass="vn" />;
+          })}
+          <StTotal label="Total Expenses" value={fmt(totalExpense)} valueB={compare!=='none'?fmt(totalExpenseP):undefined} valueClass="vn" />
 
           <StGrand label="Net Profit / (Loss)" value={fmt(netProfit)} valueClass={netProfit>=0?'vp':'vn'} />
           {compare!=='none' && (
@@ -400,15 +430,24 @@ export function ProfitAndLoss() {
 
 // ── Balance Sheet ─────────────────────────────────────────────────────────────
 export function BalanceSheet() {
-  const { txns, catMap, dateFrom, dateTo, accounts } = useApp();
+  const { txns, catMap, dateFrom, dateTo, journals, accounts } = useApp();
   const [showZero, setShowZero] = useState(false);
   const [drill,    setDrill]    = useState(null);
   const [compare,  setCompare]  = useState('none');
+  const [mode,     setMode]     = useState('journals');
 
+  const priorDates  = getPriorDates(compare, dateFrom, dateTo);
+  const accountMap  = Object.fromEntries((accounts||[]).map(a=>[a.id,a]));
+  const hasJournals = (journals||[]).some(j=>(j.journal_lines||j.lines||[]).some(l=>l.category_id||l.bank_account_id));
+  const useJournals = mode==='journals' && hasJournals;
+
+  // Journal-based BS (cumulative to dateTo)
+  const bs  = buildBSFromJournals(journals||[], '2000-01-01', dateTo,    catMap, accountMap);
+  const bsP = priorDates ? buildBSFromJournals(journals||[], '2000-01-01', priorDates[1], catMap, accountMap) : null;
+
+  // Legacy transaction-based
   const ft = filterByDateRange(txns, dateFrom, dateTo);
-  const priorDates = getPriorDates(compare, dateFrom, dateTo);
   const ftP = priorDates ? filterByDateRange(txns, priorDates[0], priorDates[1]) : [];
-
   function buildVals(transactions) {
     const byCat = {};
     transactions.forEach(t => {
@@ -418,38 +457,49 @@ export function BalanceSheet() {
     });
     return Object.values(byCat);
   }
-
   const vals  = buildVals(ft);
   const valsP = compare!=='none' ? buildVals(ftP) : [];
-
   const bankAccounts = (accounts||[]).map(a => {
     const acctTxns = txns.filter(t => t.account_id===a.id);
     const bal = (a.opening_balance||0) + acctTxns.reduce((s,t)=>s+(t.amt??0),0);
     return { ...a, balance:bal };
   });
-
   const liquidAccounts = bankAccounts.filter(a => (a.type==='checking'||a.type==='savings') && (showZero||Math.abs(a.balance)>0.005));
   const liquidTotal    = bankAccounts.filter(a=>a.type==='checking'||a.type==='savings').reduce((s,a)=>s+a.balance,0);
   const investAccounts = bankAccounts.filter(a => a.type==='investment' && (showZero||Math.abs(a.balance)>0.005));
   const investTotal    = bankAccounts.filter(a=>a.type==='investment').reduce((s,a)=>s+a.balance,0);
   const fixedAssets    = vals.filter(c=>c.t==='asset');
-  const totalAssets    = liquidTotal + investTotal + fixedAssets.reduce((s,c)=>s+Math.abs(c.total),0);
-
+  const legacyTotalAssets = liquidTotal + investTotal + fixedAssets.reduce((s,c)=>s+Math.abs(c.total),0);
   const ccAccounts = bankAccounts.filter(a => (a.type==='credit_card'||a.type==='loan') && (showZero||Math.abs(a.balance)>0.005));
   const ccTotal    = bankAccounts.filter(a=>a.type==='credit_card'||a.type==='loan').reduce((s,a)=>s+Math.abs(a.balance),0);
   const catLiabilities = vals.filter(c=>c.t==='liability');
-  const totalLiab  = ccTotal + catLiabilities.reduce((s,c)=>s+Math.abs(c.total),0);
-  const totalEquity = totalAssets - totalLiab;
-  const totalLE    = totalLiab + totalEquity;
-
-  // Prior period for comparison
+  const legacyTotalLiab = ccTotal + catLiabilities.reduce((s,c)=>s+Math.abs(c.total),0);
+  const legacyTotalEquity = legacyTotalAssets - legacyTotalLiab;
+  const legacyTotalLE    = legacyTotalLiab + legacyTotalEquity;
   const valsMapP   = {};
   valsP.forEach(c => { valsMapP[c.id] = c; });
+
+  // Use journal or legacy
+  const totalAssets = useJournals ? bs.totalAssets      : legacyTotalAssets;
+  const totalLiab   = useJournals ? bs.totalLiabilities : legacyTotalLiab;
+  const totalEquity = useJournals ? bs.totalEquity      : legacyTotalEquity;
+  const totalLE     = useJournals ? bs.totalLE          : legacyTotalLE;
 
   return (
     <div>
       <PeriodBar />
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8, flexWrap:'wrap', gap:8 }}>
+        {hasJournals && (
+          <div style={{ display:'flex', borderRadius:'var(--rr)', border:'0.5px solid var(--bd2)', overflow:'hidden' }}>
+            {[['journals','Double-entry'],['transactions','Legacy']].map(([m,l])=>(
+              <button key={m} onClick={()=>setMode(m)}
+                style={{ padding:'4px 10px', fontSize:11, border:'none', cursor:'pointer', fontFamily:'var(--font-sans)',
+                  background:mode===m?'var(--a)':'#FDFAF6', color:mode===m?'#fff':'var(--stone)', fontWeight:mode===m?500:400 }}>
+                {l}
+              </button>
+            ))}
+          </div>
+        )}
         <CompareBar compare={compare} setCompare={setCompare} />
         <label style={{ display:'flex', alignItems:'center', gap:8, fontSize:12, color:'var(--stone)', cursor:'pointer', userSelect:'none' }}>
           <input type="checkbox" checked={showZero} onChange={e=>setShowZero(e.target.checked)} style={{ cursor:'pointer' }} />
@@ -461,11 +511,28 @@ export function BalanceSheet() {
           {/* Assets */}
           <div style={{ borderRight:'0.5px solid var(--bd)' }}>
             <StHead>Assets</StHead>
-            {(liquidAccounts.length>0||liquidTotal!==0)&&(
+            {useJournals ? (
+              // Journal-mode: bank + asset category lines from double-entry
               <>
-                <StHead>Cash & Bank</StHead>
-                {liquidAccounts.map(a => <StRow key={a.id} label={a.name} value={fmt(a.balance)} indent valueClass={a.balance>=0?'vp':''} />)}
-                <StTotal label="Total Cash & Bank" value={fmt(liquidTotal)} valueClass={liquidTotal>=0?'vp':''} />
+                {bs.assetLines.filter(l=>l.type==='checking'||l.type==='savings'||!l.type).length > 0 && (
+                  <>
+                    <StHead>Cash & Bank</StHead>
+                    {bs.assetLines.filter(l=>l.type==='checking'||l.type==='savings'||l.type==='investment'||!l.type).map(l=>(
+                      <StRow key={l.id||l.l} label={l.l||l.name} value={fmt(l.net)} indent valueClass={l.net>=0?'vp':''} />
+                    ))}
+                  </>
+                )}
+              </>
+            ) : (
+              // Legacy mode
+              <>
+                {(liquidAccounts.length>0||liquidTotal!==0)&&(
+                  <>
+                    <StHead>Cash & Bank</StHead>
+                    {liquidAccounts.map(a => <StRow key={a.id} label={a.name} value={fmt(a.balance)} indent valueClass={a.balance>=0?'vp':''} />)}
+                    <StTotal label="Total Cash & Bank" value={fmt(liquidTotal)} valueClass={liquidTotal>=0?'vp':''} />
+                  </>
+                )}
               </>
             )}
             {investAccounts.length>0&&(
