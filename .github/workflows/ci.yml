@@ -20,9 +20,10 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
+          cache-dependency-path: 'package.json'
 
       - name: Install dependencies
-        run: npm ci
+        run: npm install
 
       # Tests don't need real Supabase — pure logic only.
       # Stub env vars so the app can load without throwing.
@@ -48,7 +49,7 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
-      - run: npm ci
+      - run: npm install
       - name: Check for obvious errors
         run: node --input-type=module < /dev/null || true
         # Add eslint here when you're ready: npx eslint src/

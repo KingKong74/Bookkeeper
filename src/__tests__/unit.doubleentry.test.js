@@ -156,3 +156,112 @@ describe('buildJournalLines() — accounting equation across transactions', () =
     expect(Math.abs(totalDR - totalCR)).toBeLessThan(0.001);
   });
 });
+
+// ── buildTBFromJournals() ─────────────────────────────────────────────────────
+import { buildTBFromJournals, isTBBalanced } from '../utils/helpers.js';
+
+const catMapForTB = {
+  'c-groc': { id:'c-groc', l:'Groceries', t:'expense', col:'#BA7517' },
+  'c-sal':  { id:'c-sal',  l:'Salary',    t:'income',  col:'#3B6D11' },
+  'c-rent': { id:'c-rent', l:'Rent',      t:'expense', col:'#993C1D' },
+};
+const acctMapForTB = {
+  'ba-1': { id:'ba-1', name:'ANZ Flex Saver', colour:'#185FA5' },
+};
+
+// A properly posted journal from postCategoryJournal — expense payment
+const expenseJournal = {
+  id:'j1', date:'2026-03-07', source:'auto_category',
+  journal_lines: [
+    { debit:87.32, credit:0,     account_name:'Groceries',    category_id:'c-groc', bank_account_id:null   },
+    { debit:0,     credit:87.32, account_name:'ANZ Flex Saver',category_id:null,    bank_account_id:'ba-1' },
+  ],
+};
+// Income journal
+const incomeJournal = {
+  id:'j2', date:'2026-03-15', source:'auto_category',
+  journal_lines: [
+    { debit:5000, credit:0,    account_name:'ANZ Flex Saver', category_id:null,    bank_account_id:'ba-1' },
+    { debit:0,    credit:5000, account_name:'Salary',         category_id:'c-sal', bank_account_id:null   },
+  ],
+};
+
+describe('buildTBFromJournals()', () => {
+  const journals = [expenseJournal, incomeJournal];
+  const rows     = buildTBFromJournals(journals,'2026-03-01','2026-03-31',catMapForTB,acctMapForTB);
+
+  it('returns rows for each unique account',              () => expect(rows.length).toBeGreaterThan(0));
+  it('grocery expense has DR entry',                      () => {
+    const r = rows.find(r=>r.label==='Groceries');
+    expect(r?.dr).toBe(87.32);
+  });
+  it('bank account has both DR and CR entries',           () => {
+    const r = rows.find(r=>r.label==='ANZ Flex Saver');
+    expect(r?.dr).toBe(5000);
+    expect(r?.cr).toBe(87.32);
+  });
+  it('salary income has CR entry',                        () => {
+    const r = rows.find(r=>r.label==='Salary');
+    expect(r?.cr).toBe(5000);
+  });
+  it('date filter excludes out-of-range journals',        () => {
+    const rows2 = buildTBFromJournals(journals,'2026-04-01','2026-04-30',catMapForTB,acctMapForTB);
+    expect(rows2.length).toBe(0);
+  });
+  it('empty journals returns empty array',                () => expect(buildTBFromJournals([],'2026-01-01','2026-12-31',catMapForTB,acctMapForTB)).toEqual([]));
+  it('null journals returns empty array',                 () => expect(buildTBFromJournals(null,'2026-01-01','2026-12-31',catMapForTB,acctMapForTB)).toEqual([]));
+});
+
+describe('isTBBalanced()', () => {
+  it('balanced when DR = CR',           () => {
+    const rows = buildTBFromJournals([expenseJournal,incomeJournal],'2026-01-01','2026-12-31',catMapForTB,acctMapForTB);
+    expect(isTBBalanced(rows)).toBe(true);
+  });
+  it('balanced for single journal',     () => {
+    const rows = buildTBFromJournals([expenseJournal],'2026-01-01','2026-12-31',catMapForTB,acctMapForTB);
+    expect(isTBBalanced(rows)).toBe(true);
+  });
+  it('false for manually unbalanced',   () => {
+    const unbalanced = [{ dr:100, cr:0 }, { dr:50, cr:0 }]; // no CR
+    expect(isTBBalanced(unbalanced)).toBe(false);
+  });
+  it('empty array is trivially balanced',() => expect(isTBBalanced([])).toBe(true));
+  it('null is trivially balanced',       () => expect(isTBBalanced(null)).toBe(true));
+});
+
+// ── End-to-end: buildJournalLines → buildTBFromJournals balances ──────────────
+describe('E2E: journal lines → trial balance always balances', () => {
+  const transactions = [
+    { amt:-87.32, date:'2026-03-07' },
+    { amt:-22.99, date:'2026-03-08' },
+    { amt: 5000,  date:'2026-03-15' },
+    { amt:-1800,  date:'2026-03-02' },
+  ];
+  const cats = [expenseCat, incomeCat];
+
+  function makeJournal(txn, cat, bank, id) {
+    const lines = buildJournalLines(txn, cat, bank);
+    return { id, date: txn.date || '2026-03-01', source:'auto_category', journal_lines: lines.map(l=>({...l,debit:l.debit,credit:l.credit})) };
+  }
+
+  it('trial balance balances for 4 posted transactions', () => {
+    const journals = [
+      makeJournal(transactions[0], expenseCat, bankAcct, 'jA'),
+      makeJournal(transactions[1], expenseCat, bankAcct, 'jB'),
+      makeJournal(transactions[2], incomeCat,  bankAcct, 'jC'),
+      makeJournal(transactions[3], expenseCat, bankAcct, 'jD'),
+    ];
+    const rows = buildTBFromJournals(journals,'2026-01-01','2026-12-31',catMapForTB,acctMapForTB);
+    expect(isTBBalanced(rows)).toBe(true);
+  });
+
+  it('adding any transaction preserves balance', () => {
+    for (let i = 1; i <= transactions.length; i++) {
+      const journals = transactions.slice(0,i).map((t,idx)=>
+        makeJournal(t, i%2===0?incomeCat:expenseCat, bankAcct, `j${idx}`)
+      );
+      const rows = buildTBFromJournals(journals,'2026-01-01','2026-12-31',catMapForTB,acctMapForTB);
+      expect(isTBBalanced(rows)).toBe(true);
+    }
+  });
+});

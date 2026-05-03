@@ -12,7 +12,7 @@ import React, { useState, useMemo } from 'react';
 import { useApp } from '../../context/AppContext';
 import { PeriodBar } from '../../components/ui/PeriodBar';
 import { BalanceAlert, MetricCard, PayeeAvatar } from '../../components/ui/index';
-import { fmt, fmtSigned, filterByDateRange, buildAccountTotals, payeeColor, dateRangeLabel } from '../../utils/helpers';
+import { fmt, fmtSigned, filterByDateRange, buildAccountTotals, buildTBFromJournals, isTBBalanced, payeeColor, dateRangeLabel } from '../../utils/helpers';
 
 // ── A4 paper wrapper ──────────────────────────────────────────────────────────
 function A4Paper({ title, subtitle, children }) {
@@ -209,26 +209,67 @@ function getPriorDates(compare, dateFrom, dateTo) {
 
 // ── Trial Balance ─────────────────────────────────────────────────────────────
 export function TrialBalance() {
-  const { txns, catMap, dateFrom, dateTo } = useApp();
+  const { txns, catMap, dateFrom, dateTo, journals, accounts } = useApp();
   const [drill,   setDrill]   = useState(null);
   const [compare, setCompare] = useState('none');
+  const [mode,    setMode]    = useState('journals'); // 'journals' | 'transactions'
 
-  const priorDates = getPriorDates(compare, dateFrom, dateTo);
-  const ft    = filterByDateRange(txns, dateFrom, dateTo);
-  const ftP   = priorDates ? filterByDateRange(txns, priorDates[0], priorDates[1]) : [];
-  const priorLabel = priorDates ? dateRangeLabel(priorDates[0], priorDates[1]) : '';
-  const accts = buildAccountTotals(ft, catMap);
-  const totalDr = accts.reduce((s,a) => s+a.dr, 0);
-  const totalCr = accts.reduce((s,a) => s+a.cr, 0);
-  const balanced = Math.abs(totalDr-totalCr) < 0.01;
+  const priorDates  = getPriorDates(compare, dateFrom, dateTo);
+  const accountMap  = Object.fromEntries((accounts||[]).map(a=>[a.id,a]));
+  const hasJournals = (journals||[]).some(j => (j.journal_lines||j.lines||[]).length > 0);
 
-  // Build prior period account totals for comparison
-  const priorAccts = priorDates ? buildAccountTotals(ftP, catMap) : [];
-  const priorByAc  = Object.fromEntries(priorAccts.map(a => [a.ac, a]));
+  // Journal-based (double-entry) — primary
+  const accts  = buildTBFromJournals(journals||[], dateFrom, dateTo, catMap, accountMap);
+  const acctsp = priorDates ? buildTBFromJournals(journals||[], priorDates[0], priorDates[1], catMap, accountMap) : [];
+  const balanced = isTBBalanced(accts);
+
+  // Transaction-based legacy fallback data
+  const ft          = filterByDateRange(txns, dateFrom, dateTo);
+  const ftP         = priorDates ? filterByDateRange(txns, priorDates[0], priorDates[1]) : [];
+  const priorLabel  = priorDates ? dateRangeLabel(priorDates[0], priorDates[1]) : '';
+  const legacyAccts = buildAccountTotals(ft, catMap);
+
+  // Pick source based on mode
+  const useJournals   = mode === 'journals' && hasJournals;
+  const displayAccts  = useJournals ? accts     : legacyAccts;
+  const displayAcctsP = useJournals ? acctsp    : (priorDates ? buildAccountTotals(ftP, catMap) : []);
+  const priorByKey    = Object.fromEntries(displayAcctsP.map(a => [a.ac || a.label, a]));
+
+  const totalDR = displayAccts.reduce((s,a)=>s+(a.dr||0),0);
+  const totalCR = displayAccts.reduce((s,a)=>s+(a.cr||0),0);
 
   return (
     <div>
       <PeriodBar />
+
+      {/* Mode toggle + balanced badge */}
+      <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:12, flexWrap:'wrap' }}>
+        {hasJournals ? (
+          <>
+            <div style={{ display:'flex', borderRadius:'var(--rr)', border:'0.5px solid var(--bd2)', overflow:'hidden' }}>
+              {[['journals','Double-entry ledger'],['transactions','Transactions (legacy)']].map(([m,l])=>(
+                <button key={m} onClick={()=>setMode(m)}
+                  style={{ padding:'5px 12px', fontSize:11.5, border:'none', cursor:'pointer', fontFamily:'var(--font-sans)',
+                    background:mode===m?'var(--a)':'#FDFAF6', color:mode===m?'#fff':'var(--stone)', fontWeight:mode===m?500:400 }}>
+                  {l}
+                </button>
+              ))}
+            </div>
+            {useJournals && (
+              <span style={{ fontSize:11, padding:'3px 10px', borderRadius:99, fontWeight:600,
+                background: balanced ? 'var(--gnb)' : 'var(--rdb)',
+                color:      balanced ? 'var(--gn)'  : 'var(--rd)' }}>
+                {balanced ? '✓ Balanced — DR = CR' : `⚠ Imbalanced by ${fmt(Math.abs(totalDR - totalCR))}`}
+              </span>
+            )}
+          </>
+        ) : (
+          <div style={{ fontSize:12, color:'var(--stone)', padding:'6px 10px', background:'var(--al)', borderRadius:'var(--rr)', border:'0.5px solid var(--bd)' }}>
+            💡 Assign categories to transactions to generate double-entry journals. The trial balance will then truly balance (DR = CR).
+          </div>
+        )}
+      </div>
+
       <CompareBar compare={compare} setCompare={setCompare} />
       <BalanceAlert balanced={balanced} okText="Trial balance is balanced." warnText="Trial balance out of balance." />
       <A4Paper title="Trial Balance" subtitle={dateRangeLabel(dateFrom, dateTo)}>
@@ -261,8 +302,8 @@ export function TrialBalance() {
           })}
           <div style={{ display:'grid', gridTemplateColumns:'1fr 120px 120px', padding:'8px 32px', background:'var(--sand)', borderTop:'1.5px solid var(--ink)', fontWeight:600, fontSize:12.5 }}>
             <span>Total</span>
-            <span style={{ textAlign:'right', fontVariantNumeric:'tabular-nums', color:balanced?'var(--ink)':'var(--rd)' }}>{fmt(totalDr)}</span>
-            <span style={{ textAlign:'right', fontVariantNumeric:'tabular-nums', color:balanced?'var(--ink)':'var(--rd)' }}>{fmt(totalCr)}</span>
+            <span style={{ textAlign:'right', fontVariantNumeric:'tabular-nums', color:(useJournals?balanced:true)?'var(--ink)':'var(--rd)' }}>{fmt(totalDR)}</span>
+            <span style={{ textAlign:'right', fontVariantNumeric:'tabular-nums', color:(useJournals?balanced:true)?'var(--ink)':'var(--rd)' }}>{fmt(totalCR)}</span>
           </div>
           <div style={{ height:24 }} />
         </div>

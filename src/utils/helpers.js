@@ -242,3 +242,80 @@ export function buildJournalLines(txn, category, bankAccount) {
     ];
   }
 }
+
+/**
+ * buildTBFromJournals(journals, dateFrom, dateTo, catMap, accountMap)
+ * -------------------------------------------------------------------
+ * Build trial balance account totals from double-entry journal lines.
+ * This replaces buildAccountTotals() for reports — gives a TRUE trial balance
+ * where sum(DR) === sum(CR).
+ *
+ * Returns array of:
+ *   { ac, label, type, col, dr, cr, net }
+ *   where net = cr - dr  (positive = credit balance, negative = debit balance)
+ *
+ * Only includes auto_category and manual journals (not import stubs).
+ * Filters to the given date range using journal_entries.date.
+ */
+export function buildTBFromJournals(journals, dateFrom, dateTo, catMap, accountMap = {}) {
+  const map = {};
+
+  const inRange = j => {
+    if (!j?.date) return false;
+    return j.date >= dateFrom && j.date <= dateTo;
+  };
+
+  (journals || []).forEach(journal => {
+    if (!inRange(journal)) return;
+
+    (journal.journal_lines || journal.lines || []).forEach(line => {
+      const dr  = parseFloat(line.debit)  || 0;
+      const cr  = parseFloat(line.credit) || 0;
+      if (dr === 0 && cr === 0) return;
+
+      // Resolve account from category or bank account
+      let key, label, type, col;
+
+      if (line.category_id && catMap[line.category_id]) {
+        const cat = catMap[line.category_id];
+        key   = `cat:${cat.id}`;
+        label = cat.l;
+        type  = cat.t;
+        col   = cat.col;
+      } else if (line.bank_account_id && accountMap[line.bank_account_id]) {
+        const acct = accountMap[line.bank_account_id];
+        key   = `bank:${acct.id}`;
+        label = acct.name;
+        type  = 'asset';
+        col   = acct.colour || '#185FA5';
+      } else {
+        // Fall back to account_name (suspense or old-style journals)
+        const name = line.account_name || 'Unknown';
+        key   = `name:${name}`;
+        label = name;
+        type  = name.toLowerCase().includes('suspense') ? 'asset' : 'expense';
+        col   = '#888780';
+      }
+
+      if (!map[key]) map[key] = { key, label, type, col, dr: 0, cr: 0 };
+      map[key].dr += dr;
+      map[key].cr += cr;
+    });
+  });
+
+  return Object.values(map).map(a => ({
+    ...a,
+    net: a.cr - a.dr,
+  }));
+}
+
+/**
+ * isTBBalanced(tbRows)
+ * Returns true when sum(DR) === sum(CR) within 1 cent.
+ * A balanced TB is the primary signal that double-entry is working.
+ */
+export function isTBBalanced(tbRows) {
+  const totalDR = (tbRows || []).reduce((s, r) => s + r.dr, 0);
+  const totalCR = (tbRows || []).reduce((s, r) => s + r.cr, 0);
+  return Math.abs(totalDR - totalCR) < 0.01;
+}
