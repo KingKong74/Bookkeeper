@@ -7,10 +7,10 @@ import React, { useMemo } from 'react';
 import { useApp } from '../../context/AppContext';
 import { CategoryPill } from '../../components/ui/index';
 import { runAutoCatRules, fmt } from '../../utils/helpers';
-import { updateTransaction, upsertPayee } from '../../lib/supabase';
+import { updateTransaction, upsertPayee, postCategoryJournal } from '../../lib/supabase';
 
 export function AutoCategorise({ onNavigate }) {
-  const { txns, setTxns, catMap, rules, payees, setPayees, org, toast, PALETTE } = useApp();
+  const { txns, setTxns, catMap, rules, payees, setPayees, accounts, org, toast, PALETTE } = useApp();
 
   const suggestions = useMemo(() => runAutoCatRules(txns, rules), [txns, rules]);
 
@@ -33,6 +33,15 @@ export function AutoCategorise({ onNavigate }) {
       ? { ...t, cat: updates.category_id ?? t.cat, category_id: updates.category_id ?? t.category_id, payee: sug.sugPayee ?? t.payee }
       : t
     ));
+    // Post double-entry journal for this suggestion
+    if (updates.category_id) {
+      try {
+        const txn  = (txns||[]).find(t=>t.id===sug.txnId);
+        const cat  = catMap[updates.category_id];
+        const acct = txn?.account_id ? (accounts||[]).find(a=>a.id===txn.account_id) : null;
+        if (txn && cat) await postCategoryJournal(org.id, txn, cat, acct);
+      } catch(e) { console.warn('Auto-cat journal failed:', e.message); }
+    }
   }
 
   // ── Approve ALL in parallel batch ─────────────────────────────────────────

@@ -11,7 +11,7 @@ import { PeriodBar } from '../../components/ui/PeriodBar';
 import { TransactionModal } from './TransactionModal';
 import { AddTransactionModal } from './AddTransactionModal';
 import { fmt, filterByDateRange, runAutoCatRules } from '../../utils/helpers';
-import { updateTransaction, deleteTransaction, createRule, upsertPayee, createCategory } from '../../lib/supabase';
+import { updateTransaction, deleteTransaction, createRule, upsertPayee, createCategory, postCategoryJournal } from '../../lib/supabase';
 import { logAudit } from '../../lib/audit';
 import { getSessionPref, setSessionPref } from '../../hooks/useSessionPref';
 
@@ -459,6 +459,13 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
     await updateTransaction(txnId,{category_id:catId??null});
     setTxns(p=>(p||[]).map(t=>t.id===txnId?{...t,cat:catId??null,category_id:catId??null}:t));
     if(txn) await logAudit({orgId:org.id,userId:user?.id,transaction:txn,action:catId?'category_changed':'unallocated',changedFields:{category:{from:prev??'Unallocated',to:next??'Unallocated'}}});
+    // Post double-entry journal
+    try {
+      const cat  = catId ? catMap[catId] : null;
+      const acct = txn?.account_id ? (accounts||[]).find(a=>a.id===txn.account_id) : null;
+      const entry = await postCategoryJournal(org.id, txn??{id:txnId,date:'',desc:'',amt:0}, cat, acct);
+      if (entry) setTxns(p=>(p||[]).map(t=>t.id===txnId?{...t,journal_entry_id:entry.id}:t));
+    } catch(e) { console.warn('Journal post failed:', e.message); }
     if(catId&&allocTab==='uncategorised'){
       setJustAllocated(p=>new Set([...p,txnId]));
       setTimeout(()=>setJustAllocated(p=>{const n=new Set(p);n.delete(txnId);return n;}),2500);
@@ -470,10 +477,10 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
         tr[key].count++;
         const noRule=!(rules||[]).some(r=>txn.desc.toLowerCase().includes(r.keyword?.toLowerCase())&&r.catId===catId);
         if(tr[key].count>=2&&noRule&&!rulePrompt) setRulePrompt({desc:txn.desc,catId,catLabel:next,keyword:(() => {
-            // Extract meaningful keyword: up to 4 words, strip trailing codes/hashes/numbers
+            // Extract meaningful keyword: up to 4 words, strip reference codes (contain digits or #)
             const words = txn.desc.trim().split(/\s+/);
             const meaningful = words.slice(0, Math.min(4, words.length))
-              .filter((w,i) => i===0 || !(/^[A-Z0-9#]{6,}$/.test(w) || /^\d+$/.test(w)));
+              .filter((w,i) => i===0 || !(/[0-9#]/.test(w) || w.length > 12));
             return meaningful.join(' ').toLowerCase();
           })()});
       } else { tr[key]={catId,count:1}; }
@@ -521,6 +528,13 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
     setTxns(p=>(p||[]).map(t=>selected.has(t.id)?{...t,cat:catId,category_id:catId}:t));
     setSelected(new Set()); setBulkCatDD(false);
     toast(`${ids.length} transactions → ${catMap[catId]?.l}.`);
+    // Post journals in background (non-blocking)
+    const cat  = catMap[catId];
+    const selectedTxns = (txns||[]).filter(t=>ids.includes(t.id));
+    Promise.all(selectedTxns.map(txn => {
+      const acct = txn.account_id ? (accounts||[]).find(a=>a.id===txn.account_id) : null;
+      return postCategoryJournal(org.id, txn, cat, acct).catch(e=>console.warn('Bulk journal failed:',e.message));
+    }));
   }
 
   function requestDelete(e,txn){e.stopPropagation();setPendingDelete(txn);}

@@ -576,3 +576,141 @@ export async function getFileUrl(storagePath) {
     .createSignedUrl(storagePath, 3600); // 1hr expiry
   return data?.signedUrl;
 }
+
+// ════════════════════════════════════════════════════════════
+// DOUBLE-ENTRY POSTING ENGINE
+// ════════════════════════════════════════════════════════════
+
+// buildJournalLines is a pure function — imported from helpers to keep supabase.js DB-only
+import { buildJournalLines } from '../utils/helpers.js';
+export { buildJournalLines };
+
+/**
+ * postCategoryJournal(orgId, txn, category, bankAccount)
+ * -------------------------------------------------------
+ * Auto-post a balanced journal entry when a transaction is categorised.
+ * Links the journal back to the transaction and vice-versa.
+ * If the transaction already has a journal entry, voids it first.
+ */
+export async function postCategoryJournal(orgId, txn, category, bankAccount) {
+  // Void existing auto-posted journal if category is being changed
+  if (txn.journal_entry_id) {
+    await voidAutoJournal(txn.journal_entry_id);
+  }
+
+  if (!category) {
+    // Removing category → just clear the link, journal already voided above
+    await supabase
+      .from('transactions')
+      .update({ journal_entry_id: null })
+      .eq('id', txn.id);
+    return null;
+  }
+
+  const lines = buildJournalLines(txn, category, bankAccount);
+
+  // Create the journal entry
+  const { data: entry, error: entryErr } = await supabase
+    .from('journal_entries')
+    .insert({
+      org_id:         orgId,
+      date:           txn.date,
+      description:    txn.desc ?? txn.description,
+      source:         'auto_category',
+      transaction_id: txn.id,
+    })
+    .select()
+    .single();
+  if (entryErr) throw entryErr;
+
+  // Insert the two lines
+  const { error: linesErr } = await supabase
+    .from('journal_lines')
+    .insert(lines.map(l => ({ ...l, journal_entry_id: entry.id })));
+  if (linesErr) throw linesErr;
+
+  // Link back to transaction
+  await supabase
+    .from('transactions')
+    .update({ journal_entry_id: entry.id })
+    .eq('id', txn.id);
+
+  return { ...entry, lines };
+}
+
+/**
+ * voidAutoJournal(journalEntryId)
+ * --------------------------------
+ * Soft-void an auto-generated journal by deleting it.
+ * Only voids entries with source='auto_category'.
+ */
+export async function voidAutoJournal(journalEntryId) {
+  if (!journalEntryId) return;
+  // Only delete if it was auto-generated (never delete manual journals)
+  const { data } = await supabase
+    .from('journal_entries')
+    .select('id, source')
+    .eq('id', journalEntryId)
+    .single();
+  if (data?.source === 'auto_category') {
+    await supabase.from('journal_entries').delete().eq('id', journalEntryId);
+  }
+}
+
+/**
+ * batchPostJournals(orgId, transactions, catMap, accountMap)
+ * ----------------------------------------------------------
+ * Post journals for multiple transactions at once (used on import).
+ * Skips transactions that already have a journal_entry_id.
+ * Returns { posted, skipped } counts.
+ */
+export async function batchPostJournals(orgId, transactions, catMap, accountMap) {
+  let posted = 0, skipped = 0;
+
+  for (const txn of transactions) {
+    if (txn.journal_entry_id) { skipped++; continue; }
+    if (!txn.cat && !txn.category_id) { skipped++; continue; }
+
+    const catId   = txn.cat ?? txn.category_id;
+    const cat     = catMap[catId];
+    const acct    = accountMap[txn.account_id] ?? null;
+
+    if (!cat) { skipped++; continue; }
+
+    try {
+      await postCategoryJournal(orgId, txn, cat, acct);
+      posted++;
+    } catch(e) {
+      console.error(`Journal post failed for txn ${txn.id}:`, e.message);
+      skipped++;
+    }
+  }
+
+  return { posted, skipped };
+}
+
+/**
+ * getJournalLinesForReports(orgId, dateFrom, dateTo)
+ * ---------------------------------------------------
+ * Fetch all journal lines in a date range, joined to their entries.
+ * Used by reports that read from the double-entry ledger.
+ */
+export async function getJournalLinesForReports(orgId, dateFrom, dateTo) {
+  const { data, error } = await supabase
+    .from('journal_lines')
+    .select(`
+      id, account_name, debit, credit, sort_order,
+      category_id, bank_account_id,
+      journal_entries!inner (
+        id, date, description, source, transaction_id,
+        org_id
+      )
+    `)
+    .eq('journal_entries.org_id', orgId)
+    .gte('journal_entries.date', dateFrom)
+    .lte('journal_entries.date', dateTo)
+    .order('journal_entries.date', { ascending: true });
+
+  if (error) throw error;
+  return data ?? [];
+}

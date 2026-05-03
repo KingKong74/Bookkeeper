@@ -213,3 +213,32 @@ export function runAutoCatRules(transactions, rules) {
 
   return suggestions;
 }
+
+/**
+ * buildJournalLines(txn, category, bankAccount)
+ * Pure function — no DB. Generates the two balanced DR/CR lines
+ * for a transaction when it is assigned to a category.
+ *
+ * Money OUT (amt < 0): DR category (expense/asset) | CR bank account (asset)
+ * Money IN  (amt > 0): DR bank account (asset)     | CR category (income/equity)
+ */
+export function buildJournalLines(txn, category, bankAccount) {
+  const amt        = Math.abs(parseFloat(txn.amt ?? txn.amount) || 0);
+  const isDebit    = parseFloat(txn.amt ?? txn.amount) < 0;
+  const bankName   = bankAccount?.name ?? 'Suspense / Clearing';
+  const bankAcctId = bankAccount?.id   ?? null;
+  const catName    = category?.l ?? category?.label ?? 'Uncategorised';
+  const catId      = category?.id ?? null;
+
+  if (isDebit) {
+    return [
+      { account_name: catName,  debit: amt, credit: 0,   sort_order: 0, category_id: catId,    bank_account_id: null       },
+      { account_name: bankName, debit: 0,   credit: amt, sort_order: 1, category_id: null,     bank_account_id: bankAcctId },
+    ];
+  } else {
+    return [
+      { account_name: bankName, debit: amt, credit: 0,   sort_order: 0, category_id: null,     bank_account_id: bankAcctId },
+      { account_name: catName,  debit: 0,   credit: amt, sort_order: 1, category_id: catId,    bank_account_id: null       },
+    ];
+  }
+}

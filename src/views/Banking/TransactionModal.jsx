@@ -389,6 +389,16 @@ export function TransactionModal({ txnId, onClose }) {
       }
 
 
+      // Post double-entry journal if category changed
+      if (updates.category_id !== undefined) {
+        try {
+          const cat  = updates.category_id ? catMap[updates.category_id] : null;
+          const acct = form.account_id ? (acctList||[]).find(a=>a.id===form.account_id) : null;
+          const fullTxn = { ...txn, id: txnId, journal_entry_id: txn.journal_entry_id };
+          await postCategoryJournal(org.id, fullTxn, cat, acct);
+        } catch(e) { console.warn('Modal journal post failed:', e.message); }
+      }
+
       toast('Transaction updated.');
       onClose();
     } catch (e) {
