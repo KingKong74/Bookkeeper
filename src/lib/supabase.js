@@ -162,8 +162,6 @@ export async function bulkImportTransactions(orgId, transactions) {
     date:        t.date,
     description: t.desc || t.description,
     amount:      t.amt  ?? t.amount,
-    category_id: t.cat || t.category_id || null,
-    payee_id:    t.payee_id || null,
     note:        t.note || null,
     imported:    true,
     account_id:  t.account_id || null,
@@ -208,10 +206,13 @@ export async function bulkImportTransactions(orgId, transactions) {
   }
 
   // Batch update account_id for existing unlinked transactions
+  // Chunk into groups of 50 to avoid hitting Supabase limits
   if (toUpdate.length > 0) {
+    const chunks = [];
+    for (let i = 0; i < toUpdate.length; i += 50) chunks.push(toUpdate.slice(i, i+50));
     await Promise.all(
-      toUpdate.map(u =>
-        supabase.from('transactions').update({ account_id: u.account_id }).eq('id', u.id)
+      chunks.flatMap(chunk =>
+        chunk.map(u => supabase.from('transactions').update({ account_id: u.account_id }).eq('id', u.id))
       )
     );
   }

@@ -6,6 +6,8 @@
  */
 
 import { PALETTE } from '../data/seeds';
+import { extractMerchantName, groupDescriptionsByMerchant } from './merchant.js';
+export { extractMerchantName, groupDescriptionsByMerchant };
 
 // ── Number formatting ─────────────────────────────────────────────────────────
 
@@ -120,92 +122,6 @@ export function payeeColor(name, payeesList = []) {
   // Fall back to a hash of the name
   const hash = (name || '').split('').reduce((s, c) => s + c.charCodeAt(0), 0);
   return PALETTE[hash % PALETTE.length];
-}
-
-const BANK_DESC_NOISE = new Set([
-  'payment', 'purchase', 'transfer', 'debit', 'credit', 'direct', 'entry',
-  'eftpos', 'visa', 'mastercard', 'card', 'pos', 'online', 'internet', 'banking',
-  'pay', 'to', 'from', 'the', 'pty', 'ltd', 'limited', 'australia', 'aus',
-  'nsw', 'qld', 'vic', 'wa', 'sa', 'tas', 'act', 'nt',
-]);
-
-const KNOWN_PAYEE_WORDS = {
-  woolworths: 'Woolworths',
-  coles: 'Coles',
-  aldi: 'ALDI',
-  iga: 'IGA',
-  bunnings: 'Bunnings',
-  kmart: 'Kmart',
-  target: 'Target',
-  amazon: 'Amazon',
-  netflix: 'Netflix',
-  spotify: 'Spotify',
-  uber: 'Uber',
-  doordash: 'DoorDash',
-  menulog: 'Menulog',
-  paypal: 'PayPal',
-  goodlife: 'Goodlife Fitness',
-  officeworks: 'Officeworks',
-  chemist: 'Chemist Warehouse',
-  mcdonalds: "McDonald's",
-  mcdonald: "McDonald's",
-};
-
-function titleCasePayee(raw) {
-  return (raw || '')
-    .toLowerCase()
-    .split(/\s+/)
-    .filter(Boolean)
-    .map(w => KNOWN_PAYEE_WORDS[w] || (w.length <= 3 ? w.toUpperCase() : w[0].toUpperCase() + w.slice(1)))
-    .join(' ');
-}
-
-/**
- * Extract a stable merchant/payee candidate from noisy bank descriptions.
- * e.g. "WOOLWORTHS/543 LUTWYCHE R LUTWYCHE" -> "Woolworths"
- */
-export function extractPayeeCandidate(description, knownPayees = []) {
-  const raw = (description || '').trim();
-  if (!raw) return '';
-
-  const descLower = raw.toLowerCase();
-  const known = (knownPayees || [])
-    .map(p => typeof p === 'string' ? p : p?.name)
-    .filter(Boolean)
-    .sort((a, b) => b.length - a.length);
-  const knownMatch = known.find(name => {
-    const n = name.toLowerCase();
-    return n.length > 2 && (descLower.includes(n) || n.split(/\s+/).some(w => w.length > 3 && descLower.includes(w)));
-  });
-  if (knownMatch) return knownMatch;
-
-  const normalised = raw
-    .replace(/&/g, ' and ')
-    .replace(/[*/\\|:;,_()[\]{}]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-  const tokens = normalised.split(/\s+/)
-    .map(t => t.replace(/^[^a-zA-Z0-9]+|[^a-zA-Z0-9.-]+$/g, ''))
-    .filter(Boolean);
-
-  const meaningful = [];
-  for (const token of tokens) {
-    const lower = token.toLowerCase();
-    if (KNOWN_PAYEE_WORDS[lower]) return KNOWN_PAYEE_WORDS[lower];
-    if (/\d/.test(token)) continue;
-    if (token.length < 3) continue;
-    if (BANK_DESC_NOISE.has(lower)) continue;
-    meaningful.push(token);
-    if (meaningful.length >= 2) break;
-  }
-
-  return titleCasePayee(meaningful.join(' '));
-}
-
-export function extractRuleKeyword(description, knownPayees = []) {
-  const candidate = extractPayeeCandidate(description, knownPayees);
-  return candidate ? candidate.toLowerCase() : '';
 }
 
 // ── Transaction filtering ─────────────────────────────────────────────────────
@@ -530,9 +446,11 @@ export function buildBSFromJournals(journals, dateFrom, dateTo, catMap, accountM
  *     ruleOpportunities: [ { keyword, count, exampleDesc } ]  — suggest new rules
  *   }
  */
-export function analyseImportedTransactions(transactions, existingRules, catMap, payees) {
+export function analyseImportedTransactions(transactions, existingRules, catMap, payees, cats = []) {
   const suggestions       = [];
   const descFrequency     = {};   // normalised description → [txnIds]
+  const matchedPayees     = {};   // payee name candidate → count
+  const ruleMatches       = {};   // rule keyword → count
 
   const payeeNames = (payees || []).map(p => p.name.toLowerCase());
 
@@ -555,13 +473,12 @@ export function analyseImportedTransactions(transactions, existingRules, catMap,
       });
     }
 
-    // 2. Extract a normalised key from the merchant/payee part of the description.
-    const payeeCandidate = extractPayeeCandidate(desc, payees || []);
-    const normKey = extractRuleKeyword(desc, payees || []);
-
-    if (normKey.length > 3) {
-      if (!descFrequency[normKey]) descFrequency[normKey] = [];
-      descFrequency[normKey].push({ id, desc, payeeCandidate });
+    // 2. Extract merchant name intelligently
+    const merchant = extractMerchantName(desc);
+    if (merchant) {
+      const key = merchant.toLowerCase();
+      if (!descFrequency[key]) descFrequency[key] = { name: merchant, instances: [] };
+      descFrequency[key].instances.push({ id, desc });
     }
 
     // 3. Check if any existing payee name appears in the description
@@ -590,41 +507,287 @@ export function analyseImportedTransactions(transactions, existingRules, catMap,
     }
   }
 
-  // 4. Find new repeating patterns (appear 2+ times, no existing rule)
+  // 4. Find repeating merchant names — these become rule opportunities
   const ruleOpportunities = [];
-  for (const [keyword, instances] of Object.entries(descFrequency)) {
-    if (instances.length < 2) continue;
-    const alreadyHasRule = (existingRules || []).some(r =>
-      keyword.includes(r.keyword?.toLowerCase()) || r.keyword?.toLowerCase().includes(keyword)
-    );
+  const newPayees = [];
+
+  for (const [key, group] of Object.entries(descFrequency)) {
+    if (group.instances.length < 2) continue;
+    const { name, instances } = group;
+
+    const alreadyHasRule = (existingRules || []).some(r => {
+      const kw = r.keyword?.toLowerCase() || '';
+      return key.includes(kw) || kw.includes(key);
+    });
+
     if (!alreadyHasRule) {
+      // Compute the most common amount (if consistent → suggest exact match)
+      const amts     = instances.map(i => {
+        const t = transactions.find(tx => (tx.id || tx._key) === i.id);
+        return t ? Math.abs(parseFloat(t.amt || t.amount) || 0) : 0;
+      }).filter(a => a > 0);
+      const uniqueAmts = [...new Set(amts.map(a => a.toFixed(2)))];
+      const amtExact   = uniqueAmts.length === 1 ? parseFloat(uniqueAmts[0]) : null;
+
+      // Estimate category from merchant name + description
+      const catEst = estimateCategoryForMerchant(name, instances[0].desc?.toLowerCase(), cats);
+
       ruleOpportunities.push({
-        keyword,
-        payee:       instances[0].payeeCandidate || titleCasePayee(keyword),
-        count:       instances.length,
-        exampleDesc: instances[0].desc,
-        txnIds:      instances.map(i => i.id),
+        keyword:       key,
+        suggestName:   name,
+        count:         instances.length,
+        exampleDesc:   instances[0].desc,
+        txnIds:        instances.map(i => i.id),
+        amtExact:      amtExact,
+        sugCatId:      catEst.catId,          // pre-suggested category
+        sugCatLabel:   catEst.catLabel,
+        catConfidence: catEst.confidence,     // 'high'|'medium'|'low'
+        payee:         name,                  // merchant name as payee candidate
       });
     }
-  }
 
-  // 5. Find new payees (descriptions that appear 2+ times, not yet in payees list)
-  const newPayees = [];
-  for (const [keyword, instances] of Object.entries(descFrequency)) {
-    if (instances.length < 2) continue;
-    const alreadyPayee = payeeNames.some(p => p.includes(keyword) || keyword.includes(p));
+    // Also suggest as a new payee if not already known
+    const alreadyPayee = payeeNames.some(p => p.includes(key) || key.includes(p));
     if (!alreadyPayee) {
-      newPayees.push({
-        name:    instances[0].payeeCandidate || titleCasePayee(keyword),
-        count:   instances.length,
-        txnIds:  instances.map(i => i.id),
-      });
+      newPayees.push({ name, count: instances.length, txnIds: instances.map(i => i.id) });
     }
   }
 
   return {
     suggestions:       suggestions.filter(s => s.sugCat || s.sugPayee),
-    newPayees:         newPayees.slice(0, 10),         // top 10
-    ruleOpportunities: ruleOpportunities.slice(0, 10), // top 10
+    newPayees:         newPayees,          // all detected new payees
+    ruleOpportunities: ruleOpportunities,  // all detected patterns — no cap
+  };
+}
+
+/**
+ * extractPayeeCandidate(description, existingPayees)
+ * --------------------------------------------------
+ * Returns the best payee name candidate for a description,
+ * first checking existing payees for a match, then falling
+ * back to extractMerchantName.
+ */
+export function extractPayeeCandidate(description, existingPayees = []) {
+  const descLow = (description || '').toLowerCase();
+  // 1. Check existing payees first (exact match wins)
+  for (const p of existingPayees) {
+    const pWords = (p.name || '').toLowerCase().split(/\s+/).filter(w => w.length > 3);
+    if (pWords.some(w => descLow.includes(w))) return p.name;
+  }
+  // 2. Fall back to merchant extraction
+  return extractMerchantName(description) || '';
+}
+
+// ── Merchant → Category intelligence map ────────────────────────────────────
+// Maps merchant keywords (lowercase) to { catKeyword, type } for auto-suggestion.
+// catKeyword is matched against category labels.
+const MERCHANT_CAT_HINTS = {
+  // Food & dining
+  'woolworths':     { hint:'groceries',      type:'expense' },
+  'coles':          { hint:'groceries',      type:'expense' },
+  'aldi':           { hint:'groceries',      type:'expense' },
+  'iga':            { hint:'groceries',      type:'expense' },
+  'foodworks':      { hint:'groceries',      type:'expense' },
+  'costco':         { hint:'groceries',      type:'expense' },
+  'dominos':        { hint:'dining',         type:'expense' },
+  "domino's":       { hint:'dining',         type:'expense' },
+  'mcdonalds':      { hint:'dining',         type:'expense' },
+  "mcdonald's":     { hint:'dining',         type:'expense' },
+  'kfc':            { hint:'dining',         type:'expense' },
+  'subway':         { hint:'dining',         type:'expense' },
+  'uber eats':      { hint:'dining',         type:'expense' },
+  'ubereats':       { hint:'dining',         type:'expense' },
+  'doordash':       { hint:'dining',         type:'expense' },
+  'menulog':        { hint:'dining',         type:'expense' },
+  'hungry jacks':   { hint:'dining',         type:'expense' },
+  'grill':          { hint:'dining',         type:'expense' },
+  'pizza':          { hint:'dining',         type:'expense' },
+  'cafe':           { hint:'dining',         type:'expense' },
+  'coffee':         { hint:'dining',         type:'expense' },
+  'restaurant':     { hint:'dining',         type:'expense' },
+  'sushi':          { hint:'dining',         type:'expense' },
+  'thai':           { hint:'dining',         type:'expense' },
+  'chinese':        { hint:'dining',         type:'expense' },
+  // Subscriptions
+  'netflix':        { hint:'subscriptions',  type:'expense' },
+  'spotify':        { hint:'subscriptions',  type:'expense' },
+  'apple':          { hint:'subscriptions',  type:'expense' },
+  'google':         { hint:'subscriptions',  type:'expense' },
+  'adobe':          { hint:'subscriptions',  type:'expense' },
+  'microsoft':      { hint:'subscriptions',  type:'expense' },
+  'amazon':         { hint:'subscriptions',  type:'expense' },
+  'stan':           { hint:'subscriptions',  type:'expense' },
+  'disney':         { hint:'subscriptions',  type:'expense' },
+  'binge':          { hint:'subscriptions',  type:'expense' },
+  'foxtel':         { hint:'subscriptions',  type:'expense' },
+  'youtube':        { hint:'subscriptions',  type:'expense' },
+  'canva':          { hint:'subscriptions',  type:'expense' },
+  'dropbox':        { hint:'subscriptions',  type:'expense' },
+  'chatgpt':        { hint:'subscriptions',  type:'expense' },
+  'openai':         { hint:'subscriptions',  type:'expense' },
+  'github':         { hint:'subscriptions',  type:'expense' },
+  'claude':         { hint:'subscriptions',  type:'expense' },
+  // Transport & fuel
+  'uber':           { hint:'transport',      type:'expense' },
+  'lyft':           { hint:'transport',      type:'expense' },
+  'ola':            { hint:'transport',      type:'expense' },
+  'didi':           { hint:'transport',      type:'expense' },
+  'opal':           { hint:'transport',      type:'expense' },
+  'myki':           { hint:'transport',      type:'expense' },
+  'go card':        { hint:'transport',      type:'expense' },
+  'parking':        { hint:'transport',      type:'expense' },
+  'bp':             { hint:'fuel',           type:'expense' },
+  'shell':          { hint:'fuel',           type:'expense' },
+  'caltex':         { hint:'fuel',           type:'expense' },
+  'ampol':          { hint:'fuel',           type:'expense' },
+  '7-eleven':       { hint:'fuel',           type:'expense' },
+  '7eleven':        { hint:'fuel',           type:'expense' },
+  'puma':           { hint:'fuel',           type:'expense' },
+  // Utilities & phone
+  'telstra':        { hint:'utilities',      type:'expense' },
+  'optus':          { hint:'utilities',      type:'expense' },
+  'vodafone':       { hint:'utilities',      type:'expense' },
+  'tpg':            { hint:'utilities',      type:'expense' },
+  'aussie':         { hint:'utilities',      type:'expense' },
+  'iinet':          { hint:'utilities',      type:'expense' },
+  'internode':      { hint:'utilities',      type:'expense' },
+  'origin':         { hint:'utilities',      type:'expense' },
+  'agl':            { hint:'utilities',      type:'expense' },
+  'energy':         { hint:'utilities',      type:'expense' },
+  'powershop':      { hint:'utilities',      type:'expense' },
+  'alinta':         { hint:'utilities',      type:'expense' },
+  'sydney water':   { hint:'utilities',      type:'expense' },
+  'yarra water':    { hint:'utilities',      type:'expense' },
+  // Health & fitness
+  'goodlife':       { hint:'gym',            type:'expense' },
+  'anytime fitness':{ hint:'gym',            type:'expense' },
+  'gym':            { hint:'gym',            type:'expense' },
+  'fitness':        { hint:'gym',            type:'expense' },
+  'crossfit':       { hint:'gym',            type:'expense' },
+  'f45':            { hint:'gym',            type:'expense' },
+  'chemist':        { hint:'health',         type:'expense' },
+  'pharmacy':       { hint:'health',         type:'expense' },
+  'priceline':      { hint:'health',         type:'expense' },
+  'nib':            { hint:'health',         type:'expense' },
+  'medibank':       { hint:'health',         type:'expense' },
+  'bupa':           { hint:'health',         type:'expense' },
+  'ahm':            { hint:'health',         type:'expense' },
+  // Insurance
+  'suncorp':        { hint:'insurance',      type:'expense' },
+  'gio':            { hint:'insurance',      type:'expense' },
+  'racq':           { hint:'insurance',      type:'expense' },
+  'racv':           { hint:'insurance',      type:'expense' },
+  'youi':           { hint:'insurance',      type:'expense' },
+  'budget direct':  { hint:'insurance',      type:'expense' },
+  'allianz':        { hint:'insurance',      type:'expense' },
+  'nrma':           { hint:'insurance',      type:'expense' },
+  // Shopping & retail
+  'kmart':          { hint:'shopping',       type:'expense' },
+  'target':         { hint:'shopping',       type:'expense' },
+  'big w':          { hint:'shopping',       type:'expense' },
+  'myer':           { hint:'shopping',       type:'expense' },
+  'david jones':    { hint:'shopping',       type:'expense' },
+  'ikea':           { hint:'shopping',       type:'expense' },
+  'jb hi-fi':       { hint:'shopping',       type:'expense' },
+  'jb hifi':        { hint:'shopping',       type:'expense' },
+  'harvey':         { hint:'shopping',       type:'expense' },
+  'bunnings':       { hint:'shopping',       type:'expense' },
+  'officeworks':    { hint:'shopping',       type:'expense' },
+  'cotton on':      { hint:'clothing',       type:'expense' },
+  'uniqlo':         { hint:'clothing',       type:'expense' },
+  'zara':           { hint:'clothing',       type:'expense' },
+  // Investments & savings
+  'betashares':     { hint:'investments',    type:'asset'   },
+  'vanguard':       { hint:'investments',    type:'asset'   },
+  'comsec':         { hint:'investments',    type:'asset'   },
+  'selfwealth':     { hint:'investments',    type:'asset'   },
+  'stake':          { hint:'investments',    type:'asset'   },
+  'coinspot':       { hint:'investments',    type:'asset'   },
+  'binance':        { hint:'investments',    type:'asset'   },
+  'raiz':           { hint:'investments',    type:'asset'   },
+  'spaceship':      { hint:'investments',    type:'asset'   },
+  // Income
+  'payroll':        { hint:'salary',         type:'income'  },
+  'salary':         { hint:'salary',         type:'income'  },
+  'wages':          { hint:'salary',         type:'income'  },
+  'centrelink':     { hint:'government',     type:'income'  },
+  'services australia':{ hint:'government',  type:'income'  },
+  'ato':            { hint:'tax',            type:'income'  },
+  'tax refund':     { hint:'tax',            type:'income'  },
+  // Banking & financial
+  'afterpay':       { hint:'shopping',       type:'expense' },
+  'zip':            { hint:'shopping',       type:'expense' },
+  'humm':           { hint:'shopping',       type:'expense' },
+};
+
+/**
+ * estimateCategoryForMerchant(merchantName, descriptionLower, cats)
+ * ------------------------------------------------------------------
+ * Given a merchant name and the available categories, suggest the best
+ * matching category ID using the MERCHANT_CAT_HINTS map.
+ *
+ * Matching strategy (in order):
+ *   1. Exact merchant keyword match in hint map
+ *   2. Partial merchant name match in hint map
+ *   3. hint keyword fuzzy-match against category labels
+ *   4. fallback: match category type
+ *
+ * Returns: { catId: string|null, confidence: 'high'|'medium'|'low' }
+ */
+export function estimateCategoryForMerchant(merchantName, descriptionLower, cats) {
+  if (!cats || cats.length === 0) return { catId: null, confidence: 'low' };
+
+  const mLow  = (merchantName || '').toLowerCase();
+  const dLow  = (descriptionLower || '').toLowerCase();
+
+  // Find matching hint
+  let hint = null;
+  let confidence = 'low';
+
+  // 1. Try merchant name against hint keys
+  for (const [key, val] of Object.entries(MERCHANT_CAT_HINTS)) {
+    if (mLow === key || mLow.startsWith(key) || key.startsWith(mLow)) {
+      hint = val; confidence = 'high'; break;
+    }
+  }
+
+  // 2. Try description against hint keys (broader match)
+  if (!hint) {
+    for (const [key, val] of Object.entries(MERCHANT_CAT_HINTS)) {
+      if (dLow.includes(key)) {
+        hint = val; confidence = 'medium'; break;
+      }
+    }
+  }
+
+  if (!hint) return { catId: null, confidence: 'low' };
+
+  // 3. Find the best matching category
+  const hintWords = hint.hint.toLowerCase().split(/\s+/);
+
+  // Score each category
+  const scored = cats.map(cat => {
+    const label = (cat.l || cat.label || '').toLowerCase();
+    const group = (cat.ac || cat.account_group || '').toLowerCase();
+    let score = 0;
+    // Type match
+    if (cat.t === hint.type || cat.type === hint.type) score += 10;
+    // Label contains hint words
+    for (const w of hintWords) {
+      if (label.includes(w)) score += 5;
+      if (group.includes(w)) score += 2;
+    }
+    return { cat, score };
+  });
+
+  scored.sort((a, b) => b.score - a.score);
+  const best = scored[0];
+
+  if (!best || best.score < 5) return { catId: null, confidence: 'low' };
+
+  return {
+    catId:      best.cat.id,
+    catLabel:   best.cat.l || best.cat.label,
+    confidence,
   };
 }

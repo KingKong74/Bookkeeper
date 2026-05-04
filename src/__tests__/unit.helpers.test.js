@@ -5,7 +5,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   fmt, filterByDateRange, buildAccountTotals,
-  runAutoCatRules, extractPayeeCandidate, extractRuleKeyword,
+  runAutoCatRules,
 } from '../utils/helpers';
 
 // ── fmt() ─────────────────────────────────────────────────────────────────────
@@ -98,17 +98,6 @@ describe('runAutoCatRules() — priority & skip', () => {
 });
 
 // ── buildAccountTotals() ──────────────────────────────────────────────────────
-describe('merchant/payee extraction', () => {
-  it('cleans noisy Woolworths descriptions', () => {
-    expect(extractPayeeCandidate('WOOLWORTHS/543 LUTWYCHE R LUTWYCHE')).toBe('Woolworths');
-    expect(extractRuleKeyword('WOOLWORTHS/543 LUTWYCHE R LUTWYCHE')).toBe('woolworths');
-  });
-
-  it('uses known payees when their significant word appears', () => {
-    expect(extractPayeeCandidate('PAYMENT TO GOODLIFE CARINDA A00LK', [{ name:'Goodlife Fitness' }])).toBe('Goodlife Fitness');
-  });
-});
-
 describe('buildAccountTotals()', () => {
   const catMap = {
     'c-sal':  { id:'c-sal',  l:'Salary',    t:'income',  ac:'Revenue',        col:'#3B6D11' },
@@ -136,3 +125,5 @@ describe('buildAccountTotals()', () => {
     expect(groc?.dr).toBeGreaterThan(0);
   });
 });
+
+

@@ -10,7 +10,8 @@ export { ChartOfAccounts } from './ChartOfAccounts';
 import React, { useState, useMemo } from 'react';
 import { useApp } from '../../context/AppContext';
 import { createCategory, updateCategory, deleteCategory, createRule, updateRule, deleteRule } from '../../lib/supabase';
-import { fmt, filterByDateRange } from '../../utils/helpers';
+import { fmt, fmtSigned, filterByDateRange } from '../../utils/helpers';
+import { MetricCard } from '../../components/ui/index';
 import { PeriodBar } from '../../components/ui/PeriodBar';
 
 
@@ -322,7 +323,25 @@ export function AutoCatRules() {
 }
 
 export function Budgets() {
-  const { txns, cats, catMap, budgets, setBudgets, dateFrom, dateTo, toast } = useApp();
+  const { txns, cats, catMap, budgets, setBudgets, org, dateFrom, dateTo, toast } = useApp();
+  const [saving, setSaving] = React.useState(false);
+  // Local editable state — budgets from context may be array or object
+  const [localBudgets, setLocalBudgets] = React.useState(() => {
+    if (Array.isArray(budgets)) {
+      return Object.fromEntries(budgets.map(b => [b.category_id, b.monthly_amount || 0]));
+    }
+    return budgets || {};
+  });
+
+  // Sync when context budgets change (e.g. on reload)
+  React.useEffect(() => {
+    if (Array.isArray(budgets)) {
+      setLocalBudgets(Object.fromEntries(budgets.map(b => [b.category_id, b.monthly_amount || 0])));
+    } else if (budgets && typeof budgets === 'object') {
+      setLocalBudgets(budgets);
+    }
+  }, [budgets]);
+
   const ft = filterByDateRange(txns, dateFrom, dateTo);
 
   // Compute actual spend per expense category
@@ -334,11 +353,29 @@ export function Budgets() {
   });
 
   const expenseCats = cats.filter(c => c.t === 'expense');
-  const totalBudget = expenseCats.reduce((s, c) => s + (budgets[c.id] || 0), 0);
+  const totalBudget = expenseCats.reduce((s, c) => s + (localBudgets[c.id] || 0), 0);
   const totalActual = expenseCats.reduce((s, c) => s + (actuals[c.id] || 0), 0);
 
   function updateBudget(id, val) {
-    setBudgets(prev => ({ ...prev, [id]: parseFloat(val) || 0 }));
+    setLocalBudgets(prev => ({ ...prev, [id]: parseFloat(val) || 0 }));
+  }
+
+  async function saveBudgets() {
+    setSaving(true);
+    try {
+      const { upsertBudget } = await import('../../lib/supabase');
+      const fyStart = dateFrom ? dateFrom.slice(0, 7) : new Date().toISOString().slice(0, 7);
+      const entries = Object.entries(localBudgets).filter(([, v]) => v > 0);
+      await Promise.all(entries.map(([catId, amt]) =>
+        upsertBudget(org.id, catId, fyStart, amt)
+      ));
+      setBudgets(Array.isArray(budgets)
+        ? entries.map(([category_id, monthly_amount]) => ({ category_id, monthly_amount }))
+        : localBudgets
+      );
+      toast('Budgets saved.');
+    } catch(e) { toast('Error saving budgets: ' + e.message); }
+    finally { setSaving(false); }
   }
 
   return (
@@ -353,7 +390,7 @@ export function Budgets() {
       <div className="card">
         <div className="ch">
           <h3>Budget vs actual</h3>
-          <div className="ch-r"><button className="btn btn-a btn-sm" onClick={() => toast('Budgets saved.')}>Save</button></div>
+          <div className="ch-r"><button className="btn btn-a btn-sm" onClick={saveBudgets} disabled={saving}>{saving ? 'Saving…' : 'Save budgets'}</button></div>
         </div>
 
         {/* Header */}
@@ -364,7 +401,7 @@ export function Budgets() {
         </div>
 
         {expenseCats.map(c => {
-          const b = budgets[c.id] || 0;
+          const b = localBudgets[c.id] || 0;
           const a = actuals[c.id] || 0;
           const pct = b > 0 ? Math.round(a / b * 100) : 0;
           const over = a > b;

@@ -370,6 +370,7 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
   const [payeeFilter,   setPayeeFilter]   = useState('');
   const [selected,      setSelected]      = useState(new Set());
   const [bulkCatDD,     setBulkCatDD]     = useState(false);
+  const [bulkBankId,    setBulkBankId]    = useState('');
   const [detailId,      setDetailId]      = useState(null);
   const [showAdd,       setShowAdd]       = useState(false);
   const [pendingDelete, setPendingDelete] = useState(null);
@@ -521,6 +522,16 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
     setTxns(p=>(p||[]).map(t=>t.id===txnId?{...t,desc,description:desc}:t));
   }
 
+  async function bulkAssignBank(accountId) {
+    if (!accountId || selected.size===0) return;
+    const ids=[...selected];
+    await Promise.all(ids.map(id=>updateTransaction(id,{account_id:accountId})));
+    setTxns(p=>(p||[]).map(t=>selected.has(t.id)?{...t,account_id:accountId}:t));
+    setSelected(new Set()); setBulkBankId('');
+    const acct=(accounts||[]).find(a=>a.id===accountId);
+    toast(`${ids.length} transactions assigned to ${acct?.name||'account'}.`);
+  }
+
   async function bulkAllocate(catId) {
     if(!catId||selected.size===0) return;
     const ids=[...selected];
@@ -660,6 +671,19 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
               <span style={{ fontSize:12, color:'var(--stone)' }}>{selected.size} selected</span>
               <div style={{ position:'relative' }}>
                 <button className="btn btn-a btn-sm" onClick={()=>setBulkCatDD(v=>!v)}>Categorise {selected.size} ▾</button>
+                {/* Bulk bank assign — especially useful on unlinked tab */}
+                {accountTab==='unlinked' && (
+                  <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+                    <select value={bulkBankId} onChange={e=>setBulkBankId(e.target.value)}
+                      style={{ fontSize:12, padding:'4px 8px', border:'0.5px solid var(--bd2)', borderRadius:'var(--rr)', background:'#FDFAF6', fontFamily:'var(--font-sans)', maxWidth:160 }}>
+                      <option value="">Assign to account…</option>
+                      {(accounts||[]).map(a=><option key={a.id} value={a.id}>{a.name}</option>)}
+                    </select>
+                    <button className="btn btn-a btn-sm" onClick={()=>bulkAssignBank(bulkBankId)} disabled={!bulkBankId}>
+                      Move {selected.size}
+                    </button>
+                  </div>
+                )}
                 {bulkCatDD&&(
                   <div style={{ position:'absolute', top:'calc(100% + 4px)', right:0, background:'#FDFAF6', border:'0.5px solid var(--bd2)', borderRadius:'var(--rl)', padding:0, minWidth:200, maxHeight:300, overflowY:'auto', zIndex:600, boxShadow:'0 6px 20px rgba(42,36,32,0.14)' }} onMouseLeave={()=>{}}>
                     {CAT_TYPE_ORDER.filter(t=>catsByType[t]?.length>0).map(type=>(
@@ -719,7 +743,12 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
           </colgroup>
           <thead>
             <tr>
-              <th />
+              <th style={{ width:36, textAlign:'center' }}>
+                <input type="checkbox"
+                  checked={ft.length>0 && ft.every(t=>selected.has(t.id))}
+                  onChange={e => e.target.checked ? selectAll() : setSelected(new Set())}
+                  style={{ cursor:'pointer' }} />
+              </th>
               <th>Date</th>
               <th>Description</th>
               <th>Payee</th>
@@ -781,7 +810,7 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
                       <InlineCatPicker txnId={t.id} currentCatId={t.cat} cats={cats||[]} catMap={catMap} onSelect={allocateCat} onCreateCat={handleCreateCat} />
                     )}
                   </td>
-                  <td className={`tr ${t.amt>=0?'vp':'vn'}`} style={{ cursor:'pointer' }} onClick={()=>setDetailId(t.id)}>{t.amt>=0?'+':''}{fmt(t.amt)}</td>
+                  <td className={`tr ${t.amt>=0?'vp':'vn'}`}>{t.amt>=0?'+':''}{fmt(t.amt)}</td>
                   {accountTab===null&&(()=>{
                     const acct=(accounts||[]).find(a=>a.id===t.account_id);
                     return(
@@ -797,7 +826,7 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
                       </td>
                     );
                   })()}
-                  <td style={{ textAlign:'center', cursor:'pointer' }} onClick={()=>setDetailId(t.id)}>
+                  <td style={{ textAlign:'center' }}>
                     {status==='done'   &&<span style={{ fontSize:10, padding:'2px 10px', borderRadius:4, background:'var(--gnb)', color:'var(--gn)', fontWeight:600, letterSpacing:'0.02em', display:'inline-block', minWidth:50, textAlign:'center' }}>Done</span>}
                     {status==='pending'&&<span style={{ fontSize:10, padding:'2px 10px', borderRadius:4, fontWeight:600, letterSpacing:'0.04em', display:'inline-block', minWidth:50, textAlign:'center', background:'var(--al)', color:'var(--a2)', border:'0.5px solid rgba(186,117,23,0.3)' }}>Match</span>}
                     {status==='todo'   &&<span style={{ fontSize:10, padding:'2px 10px', borderRadius:4, background:'var(--rdb)', color:'var(--rd)', fontWeight:600, letterSpacing:'0.02em', display:'inline-block', minWidth:50, textAlign:'center' }}>!</span>}

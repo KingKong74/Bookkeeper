@@ -53,7 +53,7 @@ describe('ImportStatement', () => {
   it('add more files button',  () => expect(has(f,'Add more files')).toBe(true));
   it('remove individual file', () => expect(has(f,'keysToRemove')).toBe(true));
   it('rule builder modal',     () => expect(has(f,'showRuleBuilder')).toBe(true));
-  it('rule builder forms',     () => expect(has(f,'ruleBuilderForms')).toBe(true));
+  it('rule builder forms',     () => expect(has(f,'ruleBuilderSeed') || has(f,'ruleBuilderForms')).toBe(true));
   it('review & add rules btn', () => expect(has(f,'Review & add rules')).toBe(true));
   it('saves rules to DB',      () => expect(has(f,'createRule')).toBe(true));
   it('no dynamic imports',     () => expect(has(f,'await import')).toBe(false));
@@ -198,4 +198,26 @@ describe('Transactions - search inputs opaque', () => {
   });
   it('pending category shows name',    () => expect(has(f,'pendingCat.l')).toBe(true));
   it('pending category shows colour',  () => expect(has(f,'pendingCat.col')).toBe(true));
+});
+
+describe('ImportStatement — loading + redirect', () => {
+  const f = ['views/Banking/ImportStatement.jsx'];
+  it('loading overlay exists',           () => expect(has(f,'loadingMsg')).toBe(true));
+  it('loading spinner animation',        () => expect(has(f,'ledger-spin')).toBe(true));
+  it('always redirects after import',    () => expect(has(f,"onNavigate('transactions')")).toBe(true));
+  it('no conditional redirect on payees',() => expect(has(f,"newPayeeNames.size === 0")).toBe(false));
+  it('skip-rules pending notice',        () => expect(has(f,'pending suggestions')).toBe(true));
+  it('no rule cap slice(0,10)',          () => {
+    // The slice in the banner pill display (max 5 pills) is cosmetic and OK
+    // But analyseImportedTransactions itself should not cap — check helpers
+    const hf = ['utils/helpers.js'];
+    expect(has(hf,'ruleOpportunities: ruleOpportunities,  // all detected patterns')).toBe(true);
+  });
+});
+
+describe('Transactions — click-to-edit removed', () => {
+  const f = ['views/Banking/Transactions.jsx'];
+  it('amount cell has no onClick setDetailId',  () => expect(has(f,"onClick={()=>setDetailId(t.id)}>{t.amt>=0?'+'")).toBe(false));
+  it('status cell has no onClick setDetailId',  () => expect(has(f,"cursor:'pointer' }} onClick={()=>setDetailId(t.id)}>")).toBe(false));
+  it('TransactionModal still exists for edit',  () => expect(has(f,'TransactionModal')).toBe(true));
 });

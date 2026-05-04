@@ -9,7 +9,8 @@ import { useApp } from '../../context/AppContext';
 import { parseCSVText, autoDetectColumns, buildTransactions } from '../../utils/csvParser';
 import { parsePDF } from '../../utils/pdfParser';
 import { bulkImportTransactions, upsertPayee, updateBankAccount, getTransactions, createRule } from '../../lib/supabase';
-import { fmt, analyseImportedTransactions, extractPayeeCandidate } from '../../utils/helpers';
+import { fmt, analyseImportedTransactions, extractPayeeCandidate, estimateCategoryForMerchant } from '../../utils/helpers';
+import { extractMerchantName } from '../../utils/merchant.js';
 
 const fmtAmt = n => (n >= 0 ? '+' : '') + '$' + Math.abs(n).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 const CAT_TYPE_ORDER = ['income', 'expense', 'asset', 'liability', 'equity'];
@@ -37,46 +38,61 @@ function RuleBuilderModal({ initialForms, cats, rules, org, setRules, toast, onC
     setForms(prev => prev.map((form, i) => i === index ? { ...form, ...patch } : form));
   }
 
-  async function saveRules() {
-    setSavingRules(true);
-    const toSave = forms.filter(f => f.enabled && f.keyword.trim());
-    let saved = 0;
+  const [saveError, setSaveError] = React.useState('');
 
-    for (const form of toSave) {
-      try {
-        const r = await createRule(org.id, {
-          keyword:     form.keyword.trim(),
-          category_id: form.catId || null,
-          payee_name:  form.payee.trim() || '',
-          sort_order:  (rules || []).length + saved,
-          ...(form.amtExact ? { amt_exact: parseFloat(form.amtExact) } : {}),
-          ...(form.amtMin   ? { amt_min:   parseFloat(form.amtMin) }   : {}),
-          ...(form.amtMax   ? { amt_max:   parseFloat(form.amtMax) }   : {}),
-          ...(form.direction ? { direction: form.direction }           : {}),
-        });
-        setRules(prev => [...(prev || []), {
-          ...r,
-          catId:     r.category_id || '',
-          keyword:   r.keyword,
-          payee:     r.payee_name || '',
-          amtExact:  r.amt_exact || '',
-          amtMin:    r.amt_min || '',
-          amtMax:    r.amt_max || '',
-          direction: r.direction || '',
-        }]);
-        saved++;
-      } catch (e) {
-        console.warn('Rule save failed:', e.message);
-      }
+  async function saveRules() {
+    const toSave = forms.filter(f => f.enabled && f.keyword.trim());
+    if (toSave.length === 0) { setSaveError('No rules to save — enter a keyword or untick all.'); return; }
+    const missingCat = toSave.filter(f => !f.catId);
+    if (missingCat.length > 0) {
+      setSaveError(`${missingCat.length} rule${missingCat.length > 1 ? 's are' : ' is'} missing a category. Select a category or untick them.`);
+      return;
     }
+    setSaveError('');
+    setSavingRules(true);
+    const results = await Promise.allSettled(
+      toSave.map((form, idx) =>
+        createRule(org.id, {
+          keyword:     form.keyword.trim().toLowerCase(),
+          category_id: form.catId || null,
+          payee_name:  (form.payee || '').trim(),
+          sort_order:  (rules || []).length + idx,
+        })
+      )
+    );
+
+    const saved = results.filter(r => r.status === 'fulfilled').length;
+    const failed = results.filter(r => r.status === 'rejected');
+
+    results.forEach(r => {
+      if (r.status === 'fulfilled') {
+        const rule = r.value;
+        setRules(prev => [...(prev || []), {
+          id:        rule.id,
+          keyword:   rule.keyword,
+          catId:     rule.category_id || '',
+          payee:     rule.payee_name  || '',
+          amtExact:  '',
+          amtMin:    '',
+          amtMax:    '',
+          direction: '',
+        }]);
+      }
+    });
 
     setSavingRules(false);
-    onClose();
-    toast(`${saved} rule${saved !== 1 ? 's' : ''} added.`);
+
+    if (failed.length > 0) {
+      setSaveError(`${failed.length} rule(s) failed to save. ${saved} succeeded.`);
+    }
+    if (saved > 0) {
+      onClose();
+      toast(`${saved} rule${saved !== 1 ? 's' : ''} added.`);
+    }
   }
 
   return (
-    <div className="modal-bg" onClick={onClose}>
+    <div className="modal-bg" onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="modal" style={{ width:680, maxHeight:'85vh', display:'flex', flexDirection:'column' }} onClick={e=>e.stopPropagation()}>
         <div className="modal-head">
           <div>
@@ -107,10 +123,33 @@ function RuleBuilderModal({ initialForms, cats, rules, org, setRules, toast, onC
                     style={{ fontSize:12 }} placeholder="e.g. goodlife" />
                 </div>
                 <div className="field" style={{ marginBottom:0 }}>
-                  <label style={{ fontSize:10 }}>Assign category</label>
+                  <label style={{ fontSize:10, display:'flex', alignItems:'center', gap:5 }}>
+                    Assign category
+                    {form.catId && form.catConfidence === 'high' && (
+                      <span style={{ fontSize:9, padding:'1px 6px', borderRadius:99, background:'var(--gnb)', color:'var(--gn)', fontWeight:600 }}>auto</span>
+                    )}
+                    {form.catId && form.catConfidence === 'medium' && (
+                      <span style={{ fontSize:9, padding:'1px 6px', borderRadius:99, background:'var(--al)', color:'var(--a2)', fontWeight:600 }}>~auto</span>
+                    )}
+                  </label>
                   <select value={form.catId} onClick={e=>e.stopPropagation()}
-                    onChange={e=>updateForm(i, { catId:e.target.value })}
-                    style={{ fontSize:12 }}>
+                    onChange={e => {
+                      if (e.target.value === '__new__') {
+                        const name = window.prompt('New category name:');
+                        if (!name?.trim()) return;
+                        const type = window.prompt('Type (income/expense/asset/liability/equity):', 'expense') || 'expense';
+                        import('../../lib/supabase').then(async ({ createCategory }) => {
+                          try {
+                            const newCat = await createCategory(org.id, { label:name.trim(), type, account_group: name.trim(), colour: '#888780', sort_order: (cats||[]).length });
+                            setCats(prev => [...(prev||[]), { id:newCat.id, l:newCat.label, t:newCat.type, ac:newCat.account_group, col:newCat.colour, sort_order:newCat.sort_order }]);
+                            updateForm(i, { catId: newCat.id, catConfidence:'manual' });
+                          } catch(err) { alert('Error creating category: ' + err.message); }
+                        });
+                      } else {
+                        updateForm(i, { catId:e.target.value, catConfidence:'manual' });
+                      }
+                    }}
+                    style={{ fontSize:12, borderColor: form.catId && form.catConfidence==='high' ? 'var(--gn)' : form.catId && form.catConfidence==='medium' ? 'var(--a2)' : '' }}>
                     <option value="">- choose -</option>
                     {categorySections(cats).map(section => (
                       <optgroup key={section.type} label={section.label}>
@@ -167,7 +206,13 @@ function RuleBuilderModal({ initialForms, cats, rules, org, setRules, toast, onC
             {forms.filter(f=>f.enabled).length} of {forms.length} rules selected
           </div>
           <div style={{ display:'flex', gap:8 }}>
-            <button className="btn btn-sm" onClick={onClose}>Skip</button>
+            {saveError && (
+              <span style={{ fontSize:11.5, color:'var(--rd)', flex:1 }}>{saveError}</span>
+            )}
+            <div style={{ fontSize:11, color:'var(--stone)', flex:1, lineHeight:1.5 }}>
+              Skipping keeps these as <strong>pending suggestions</strong> visible in Transactions view.
+            </div>
+            <button className="btn btn-sm" onClick={onClose}>Skip for now</button>
             <button className="btn btn-a btn-sm" disabled={savingRules || forms.filter(f=>f.enabled&&f.keyword.trim()).length===0}
               onClick={saveRules}>
               {savingRules ? 'Saving...' : `Add ${forms.filter(f=>f.enabled&&f.keyword.trim()).length} rule${forms.filter(f=>f.enabled&&f.keyword.trim()).length!==1?'s':''}`}
@@ -229,6 +274,7 @@ export function ImportStatement({ onNavigate }) {
 
   const [step,            setStep]           = useState('upload');   // 'upload' | 'review'
   const [loading,         setLoading]        = useState(false);
+  const [loadingMsg,      setLoadingMsg]     = useState('');
   const [selectedAccount, setSelectedAccount]= useState('');
   const [parsedFiles,     setParsedFiles]    = useState([]);         // array of parseFile results
   const [excluded,        setExcluded]       = useState(new Set());  // Set of "fileIdx:rowIdx" keys
@@ -252,11 +298,33 @@ export function ImportStatement({ onNavigate }) {
   const { autoCatMap, smartOpportunities } = useMemo(() => {
     if (!allTransactions.length) return { autoCatMap: {}, smartOpportunities: { suggestions:[], newPayees:[], ruleOpportunities:[] } };
     const adapted = allTransactions.map(t => ({ id: t._key, cat: null, desc: t.desc, amt: t.amt, date: t.date, payee: '' }));
-    const analysis = analyseImportedTransactions(adapted, rules||[], {}, payees||[]);
+    const analysis = analyseImportedTransactions(adapted, rules||[], {}, payees||[], cats||[]);
+
+    // Layer 1: rule-based suggestions
     const map = {};
     analysis.suggestions.forEach(s => { map[s.txnId] = s; });
+
+    // Layer 2: merchant intelligence for every unmatched transaction
+    for (const t of allTransactions) {
+      if (map[t._key]?.sugCat) continue; // already matched by a rule
+      const merchant = extractMerchantName(t.desc || '');
+      if (!merchant) continue;
+      const est = estimateCategoryForMerchant(merchant, (t.desc||'').toLowerCase(), cats||[]);
+      if (!est.catId) continue;
+      const payeeCandidate = extractPayeeCandidate(t.desc, payees||[]) || merchant;
+      map[t._key] = {
+        txnId:      t._key,
+        sugCat:     est.catId,
+        sugCatLabel: est.catLabel,
+        sugPayee:   payeeCandidate,
+        confidence: est.confidence === 'high' ? 'High' : 'Medium',
+        reason:     `Merchant: ${merchant}`,
+        fromIntel:  true,
+      };
+    }
+
     return { autoCatMap: map, smartOpportunities: analysis };
-  }, [allTransactions, rules, payees]);
+  }, [allTransactions, rules, payees, cats]);
 
   const fileTransactions = useMemo(() => {
     const groups = parsedFiles.map(() => []);
@@ -281,9 +349,10 @@ export function ImportStatement({ onNavigate }) {
         acc.debitCount += 1;
         acc.debitTotal += t.amt;
       }
+      if (autoCatMap[t._key]?.sugCat) acc.autoCatCount += 1;
       return acc;
-    }, { creditCount: 0, debitCount: 0, creditTotal: 0, debitTotal: 0 });
-  }, [selectedRows]);
+    }, { creditCount: 0, debitCount: 0, creditTotal: 0, debitTotal: 0, autoCatCount: 0 });
+  }, [selectedRows, autoCatMap]);
 
   const selectedCountByFile = useMemo(
     () => fileTransactions.map(fileTxns => fileTxns.filter(t => !excluded.has(t._key)).length),
@@ -320,7 +389,7 @@ export function ImportStatement({ onNavigate }) {
   // ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ Import ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬
   async function doImport() {
     if (!org) { toast('No organisation found.'); return; }
-    setLoading(true);
+    setLoading(true); setLoadingMsg('Preparing…');
     try {
       const payeeIds = {};
       for (const t of selectedRows) {
@@ -351,6 +420,7 @@ export function ImportStatement({ onNavigate }) {
         });
       });
       if (toImport.length === 0) { toast('No transactions selected.'); return; }
+      setLoadingMsg(`Importing ${toImport.length} transaction${toImport.length!==1?'s':''}…`);
       const { inserted, linked, skipped } = await bulkImportTransactions(org.id, toImport);
       const parts = [`Imported ${inserted} transaction${inserted!==1?'s':''}`];
       if (linked)  parts.push(`${linked} existing linked to account`);
@@ -398,7 +468,8 @@ export function ImportStatement({ onNavigate }) {
       const normalise = t => ({ ...t, cat:t.category_id??null, desc:t.description??'', amt:parseFloat(t.amount)??0, payee:t.payees?.name??t.payee??'', note:t.note??'' });
       setTxns(fresh.map(normalise));
 
-      if (newPayeeNames.size === 0) onNavigate('transactions');
+      // Always navigate to transactions after import
+      onNavigate('transactions');
     } catch(e) { toast('Import failed: ' + e.message); }
     finally { setLoading(false); }
   }
@@ -463,6 +534,14 @@ export function ImportStatement({ onNavigate }) {
 
   return (
     <div>
+      {/* Full-screen loading overlay during import */}
+      {loading && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(15,10,5,0.6)', zIndex:9999, display:'flex', alignItems:'center', justifyContent:'center', flexDirection:'column', gap:18 }}>
+          <div style={{ width:44, height:44, border:'4px solid rgba(255,255,255,0.2)', borderTop:'4px solid #fff', borderRadius:'50%', animation:'ledger-spin 0.8s linear infinite' }} />
+          <div style={{ color:'#fff', fontSize:14, fontWeight:500 }}>{loadingMsg || 'Importing…'}</div>
+          <style>{'@keyframes ledger-spin { to { transform: rotate(360deg); } }'}</style>
+        </div>
+      )}
       {/* Header bar */}
       <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', marginBottom:14, gap:12, flexWrap:'wrap' }}>
         <div style={{ flex:1 }}>
@@ -490,9 +569,14 @@ export function ImportStatement({ onNavigate }) {
             </span>}
           </div>
         </div>
-        <div style={{ display:'flex', gap:8, flexShrink:0 }}>
+        <div style={{ display:'flex', gap:8, flexShrink:0, alignItems:'center' }}>
           <button className="btn" onClick={reset}>{"<- Change files"}</button>
           <button className="btn btn-sm" onClick={addMoreFiles}>+ Add more files</button>
+          {!selectedAccount && selectedRows.length > 0 && (
+            <span style={{ fontSize:11.5, color:'var(--a2)', background:'var(--al)', padding:'4px 10px', borderRadius:'var(--rr)', border:'0.5px solid rgba(186,117,23,0.4)' }}>
+              ⚠ No bank account — will import as unlinked
+            </span>
+          )}
           <button className="btn btn-a" onClick={doImport} disabled={loading || selectedRows.length === 0}>
             {loading ? 'Importing...' : `Import ${selectedRows.length} transaction${selectedRows.length!==1?'s':''}`}
           </button>
@@ -568,17 +652,19 @@ export function ImportStatement({ onNavigate }) {
           <button className="btn btn-a btn-sm" onClick={() => {
             // Pre-populate rule forms from opportunities
             setRuleBuilderSeed(smartOpportunities.ruleOpportunities.map(op => ({
-              id:        `${op.keyword}:${op.exampleDesc}`,
-              keyword:   op.keyword,
-              catId:     '',
-              payee:     op.payee || extractPayeeCandidate(op.exampleDesc, payees || []),
-              amtExact:  '',
-              amtMin:    '',
-              amtMax:    '',
-              direction: '',
-              enabled:   true,   // user can toggle off
-              count:     op.count,
-              example:   op.exampleDesc,
+              id:            `${op.keyword}:${op.exampleDesc}`,
+              keyword:       op.keyword,
+              catId:         op.sugCatId      || '',
+              catLabel:      op.sugCatLabel    || '',
+              catConfidence: op.catConfidence  || 'low',
+              payee:         op.suggestName || op.payee || extractPayeeCandidate(op.exampleDesc, payees || []),
+              amtExact:      op.amtExact != null ? String(op.amtExact.toFixed(2)) : '',
+              amtMin:        '',
+              amtMax:        '',
+              direction:     'out',
+              enabled:       true,
+              count:         op.count,
+              example:       op.exampleDesc,
             })));
             setShowRuleBuilder(true);
           }}>
@@ -595,6 +681,13 @@ export function ImportStatement({ onNavigate }) {
           <div style={{ marginLeft:'auto', display:'flex', gap:10, fontSize:12 }}>
             <span className="vp">+ {selectedSummary.creditCount} credits</span>
             <span className="vn">- {selectedSummary.debitCount} debits</span>
+            {selectedSummary.autoCatCount > 0 && (
+              <span style={{ padding:'2px 8px', borderRadius:99, fontSize:11, fontWeight:600,
+                background: selectedSummary.autoCatCount === (selectedSummary.creditCount + selectedSummary.debitCount) ? 'var(--gnb)' : 'var(--al)',
+                color:      selectedSummary.autoCatCount === (selectedSummary.creditCount + selectedSummary.debitCount) ? 'var(--gn)' : 'var(--a2)' }}>
+                {Math.round(selectedSummary.autoCatCount / (selectedSummary.creditCount + selectedSummary.debitCount) * 100)}% auto-categorised
+              </span>
+            )}
             <button className="btn btn-sm" onClick={() => toggleAll(true)}>All</button>
             <button className="btn btn-sm" onClick={() => toggleAll(false)}>None</button>
           </div>
@@ -616,8 +709,9 @@ export function ImportStatement({ onNavigate }) {
                   <th style={{ width:92 }}>Date</th>
                   <th>Description</th>
                   <th className="tr" style={{ width:110 }}>Amount</th>
-                  <th style={{ width:160 }}>Auto-cat</th>
-                  <th style={{ width:140 }}>Source file</th>
+                  <th style={{ width:160 }}>Category</th>
+                  <th style={{ width:120 }}>Payee</th>
+                  <th style={{ width:130 }}>Source file</th>
                 </tr>
               </thead>
               <tbody>
@@ -701,7 +795,12 @@ export function ImportStatement({ onNavigate }) {
                                 : <span style={{ fontSize:11, color:'var(--sand4)', fontStyle:'italic' }}>-</span>
                               }
                             </td>
-                            <td style={{ fontSize:11, color:'var(--stone)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', maxWidth:130 }}>{t._file}</td>
+                            <td style={{ fontSize:11, color:'var(--stone)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', maxWidth:110 }}>
+                              {sug?.sugPayee
+                                ? <span>{sug.sugPayee}</span>
+                                : <span style={{ color:'var(--sand4)', fontStyle:'italic' }}>—</span>}
+                            </td>
+                            <td style={{ fontSize:11, color:'var(--stone)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', maxWidth:110 }}>{t._file}</td>
                           </tr>
                         );
                       })}
@@ -718,7 +817,7 @@ export function ImportStatement({ onNavigate }) {
                     <div className="vp">{fmtAmt(selectedSummary.creditTotal)}</div>
                     <div className="vn">{fmtAmt(selectedSummary.debitTotal)}</div>
                   </td>
-                  <td colSpan={2} />
+                  <td colSpan={3} />
                 </tr>
               </tfoot>
             </table>

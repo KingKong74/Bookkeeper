@@ -636,3 +636,83 @@ describe('Scenario: filterByDateRange edge cases', () => {
     expect(ft[0].id).toBe('t2');
   });
 });
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SCENARIO 18: Budgets — array-to-object normalisation
+// "Context gives us budgets as an array from DB, component needs object keyed by category_id"
+// ══════════════════════════════════════════════════════════════════════════════
+describe('Scenario: Budget array → object normalisation', () => {
+  const budgetsArray = [
+    { category_id:'c-rent',  monthly_amount:1800, fy_start:'2026-07' },
+    { category_id:'c-groc',  monthly_amount:500,  fy_start:'2026-07' },
+    { category_id:'c-gym',   monthly_amount:60,   fy_start:'2026-07' },
+  ];
+
+  function normaliseBudgets(budgets) {
+    if (Array.isArray(budgets)) {
+      return Object.fromEntries(budgets.map(b => [b.category_id, b.monthly_amount || 0]));
+    }
+    return budgets || {};
+  }
+
+  it('converts array to keyed object',       () => {
+    const obj = normaliseBudgets(budgetsArray);
+    expect(obj['c-rent']).toBe(1800);
+    expect(obj['c-groc']).toBe(500);
+    expect(obj['c-gym']).toBe(60);
+  });
+  it('returns empty object for empty array', () => expect(normaliseBudgets([])).toEqual({}));
+  it('passes through existing object',       () => {
+    const obj = { 'c-rent':1800 };
+    expect(normaliseBudgets(obj)).toEqual(obj);
+  });
+  it('handles null gracefully',              () => expect(normaliseBudgets(null)).toEqual({}));
+  it('budget lookup works after normalise',  () => {
+    const obj = normaliseBudgets(budgetsArray);
+    const cats = [{ id:'c-rent', l:'Rent', t:'expense' }];
+    const total = cats.reduce((s,c) => s + (obj[c.id] || 0), 0);
+    expect(total).toBe(1800);
+  });
+  it('unknown category returns 0',           () => {
+    const obj = normaliseBudgets(budgetsArray);
+    expect(obj['c-unknown'] || 0).toBe(0);
+  });
+  it('totalBudget is sum of all categories', () => {
+    const obj = normaliseBudgets(budgetsArray);
+    const total = Object.values(obj).reduce((s,v) => s+v, 0);
+    expect(total).toBe(2360);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SCENARIO 19: Bulk bank account assignment for unlinked transactions
+// "I select 3 unlinked transactions and assign them all to ANZ Flex Saver"
+// ══════════════════════════════════════════════════════════════════════════════
+describe('Scenario: Bulk bank account assignment', () => {
+  const txns = [
+    { id:'t1', account_id:null, desc:'WOOLWORTHS', amt:-92 },
+    { id:'t2', account_id:null, desc:'NETFLIX',    amt:-15.99 },
+    { id:'t3', account_id:'ba-2', desc:'SALARY',   amt:5000 },  // already assigned
+    { id:'t4', account_id:null, desc:'GOODLIFE',   amt:-17.49 },
+  ];
+  const selected = new Set(['t1','t2','t4']);
+  const bankId   = 'ba-1';
+
+  function simulateBulkAssign(txns, selected, bankId) {
+    return txns.map(t => selected.has(t.id) ? { ...t, account_id: bankId } : t);
+  }
+
+  it('assigns selected transactions to bank',    () => {
+    const result = simulateBulkAssign(txns, selected, bankId);
+    expect(result.filter(t=>t.account_id===bankId).length).toBe(3);
+  });
+  it('does not affect already-assigned txn',     () => {
+    const result = simulateBulkAssign(txns, selected, bankId);
+    expect(result.find(t=>t.id==='t3')?.account_id).toBe('ba-2');
+  });
+  it('all selected now have account_id',          () => {
+    const result = simulateBulkAssign(txns, selected, bankId);
+    const stillUnlinked = result.filter(t=>selected.has(t.id) && !t.account_id);
+    expect(stillUnlinked.length).toBe(0);
+  });
+});

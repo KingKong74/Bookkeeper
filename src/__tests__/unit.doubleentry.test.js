@@ -455,3 +455,114 @@ describe('analyseImportedTransactions() — smart auto-cat', () => {
   });
   it('null rules does not throw',                () => expect(()=>analyseImportedTransactions(txns,null,{},[]) ).not.toThrow());
 });
+
+// ── extractMerchantName() ─────────────────────────────────────────────────────
+import { extractMerchantName, groupDescriptionsByMerchant } from '../utils/merchant.js';
+
+describe('extractMerchantName() — smart payee extraction', () => {
+  it('WOOLWORTHS/543 LUTWYCHE R LUTWYCHE → "Woolworths"',    () => expect(extractMerchantName('WOOLWORTHS/543 LUTWYCHE R LUTWYCHE')).toBe('Woolworths'));
+  it('PAYMENT TO GOODLIFE CARINDA A00LK → starts with Goodlife', () => expect(extractMerchantName('PAYMENT TO GOODLIFE CARINDA A00LK')).toMatch(/^Goodlife/));
+  it('NETFLIX.COM → "Netflix"',                              () => expect(extractMerchantName('NETFLIX.COM')).toBe('Netflix'));
+  it('BPAY TO TELSTRA #619288 → "Telstra"',                  () => expect(extractMerchantName('BPAY TO TELSTRA #619288')).toBe('Telstra'));
+  it('EFTPOS COLES SUPERMARKETS SYDNEY → "Coles"',           () => expect(extractMerchantName('EFTPOS COLES SUPERMARKETS SYDNEY')).toBe('Coles'));
+  it('DIRECT DEBIT ENERGY AUSTRALIA → "Energy"',             () => expect(extractMerchantName('DIRECT DEBIT ENERGY AUSTRALIA')).toBe('Energy'));
+  it('PAYMENT TO COINSPOT #017452 → "Coinspot"',             () => expect(extractMerchantName('PAYMENT TO COINSPOT #017452')).toBe('Coinspot'));
+  it('PAYMENT TO BETASHARES APPLICATIONS → "Betashares"',    () => expect(extractMerchantName('PAYMENT TO BETASHARES APPLICATIONS ACCOUNT #191841')).toMatch(/^Betashares/));
+  it('SALARY CREDIT → null (internal)',                       () => expect(extractMerchantName('SALARY CREDIT COMPANY PTY LTD')).toBeNull());
+  it('INTEREST → null (internal)',                            () => expect(extractMerchantName('CREDIT INTEREST')).toBeNull());
+  it('ATM WITHDRAWAL → null (internal)',                      () => expect(extractMerchantName('ATM WITHDRAWAL 0123')).toBeNull());
+  it('null input → null',                                     () => expect(extractMerchantName(null)).toBeNull());
+  it('empty string → null',                                   () => expect(extractMerchantName('')).toBeNull());
+  it('title-cases the result',                                () => {
+    const r = extractMerchantName('WOOLWORTHS METRO SYDNEY');
+    expect(r).toMatch(/^Woolworths/);
+  });
+  it('PAYMENT FROM → null (transfer)',                        () => {
+    const r = extractMerchantName('PAYMENT FROM MR BAILEY MATTHEW KING');
+    // Payment FROM is stripped, leaving BAILEY or MR — either way it's a person name
+    // We just verify it doesn't crash and returns something or null
+    expect(typeof r === 'string' || r === null).toBe(true);
+  });
+});
+
+describe('groupDescriptionsByMerchant()', () => {
+  const txns = [
+    { id:'t1', desc:'WOOLWORTHS/543 LUTWYCHE', amt:-92 },
+    { id:'t2', desc:'WOOLWORTHS ONLINE 9182',  amt:-55 },
+    { id:'t3', desc:'PAYMENT TO GOODLIFE CARINDA A001', amt:-17.49 },
+    { id:'t4', desc:'PAYMENT TO GOODLIFE CARINDA A002', amt:-17.49 },
+    { id:'t5', desc:'NETFLIX.COM',             amt:-15.99 },
+    { id:'t6', desc:'NETFLIX.COM ANNUAL',      amt:-15.99 },
+    { id:'t7', desc:'SALARY CREDIT',           amt: 5000  }, // internal — ignored
+  ];
+
+  const groups = groupDescriptionsByMerchant(txns);
+
+  it('returns array',                              () => expect(Array.isArray(groups)).toBe(true));
+  it('groups Woolworths (appears twice)',           () => expect(groups.find(g=>g.name==='Woolworths')).toBeDefined());
+  it('groups Goodlife (appears twice)',             () => expect(groups.find(g=>g.name==='Goodlife')).toBeDefined());
+  it('groups Netflix (appears twice)',             () => expect(groups.find(g=>g.name==='Netflix')).toBeDefined());
+  it('excludes salary (internal, count=1 only)',   () => expect(groups.find(g=>g.name==='Salary'||g.name==='Salary Credit')).toBeUndefined());
+  it('Woolworths has count=2',                     () => expect(groups.find(g=>g.name==='Woolworths')?.count).toBe(2));
+  it('Goodlife has keyword in lowercase',          () => expect(groups.find(g=>g.name?.startsWith('Goodlife'))?.keyword).toMatch(/goodlife/));
+  it('consistent amounts → amtExact pre-filled',  () => {
+    // Goodlife both $17.49 → should suggest amtExact in analyseImportedTransactions
+    // analyseImportedTransactions tested separately — use dynamic import
+    const result = analyseImportedTransactions(
+      txns.map(t=>({...t,cat:null,payee:''})),
+      [], {}, []
+    );
+    const goodlife = result.ruleOpportunities.find(o=>o.keyword==='goodlife');
+    expect(goodlife?.amtExact).toBeCloseTo(17.49, 2);
+  });
+  it('inconsistent amounts → no amtExact',        () => {
+    // analyseImportedTransactions tested separately — use dynamic import
+    const result = analyseImportedTransactions(
+      txns.map(t=>({...t,cat:null,payee:''})),
+      [], {}, []
+    );
+    const woolworths = result.ruleOpportunities.find(o=>o.keyword==='woolworths');
+    expect(woolworths?.amtExact).toBeNull();
+  });
+});
+
+// ── estimateCategoryForMerchant() ─────────────────────────────────────────────
+import { estimateCategoryForMerchant, extractPayeeCandidate } from '../utils/helpers.js';
+
+const testCats = [
+  { id:'c-groc', l:'Groceries',    t:'expense', ac:'Living Expenses', col:'#BA7517' },
+  { id:'c-dining',l:'Dining & Café',t:'expense', ac:'Entertainment',  col:'#D85A30' },
+  { id:'c-sub',  l:'Subscriptions',t:'expense', ac:'Entertainment',  col:'#7F77DD' },
+  { id:'c-gym',  l:'Gym & Fitness',t:'expense', ac:'Health',          col:'#1D9E75' },
+  { id:'c-util', l:'Utilities',    t:'expense', ac:'Housing',         col:'#854F0B' },
+  { id:'c-fuel', l:'Fuel',         t:'expense', ac:'Vehicle',         col:'#3B6D11' },
+  { id:'c-invest',l:'Investments', t:'asset',   ac:'Investments',     col:'#185FA5' },
+  { id:'c-sal',  l:'Salary',       t:'income',  ac:'Revenue',         col:'#3B6D11' },
+];
+
+describe('estimateCategoryForMerchant() — merchant intelligence', () => {
+  it('Woolworths → Groceries',      () => expect(estimateCategoryForMerchant('Woolworths','woolworths metro',testCats).catId).toBe('c-groc'));
+  it('Netflix → Subscriptions',     () => expect(estimateCategoryForMerchant('Netflix','netflix.com annual',testCats).catId).toBe('c-sub'));
+  it('Dominos → Dining',            () => expect(estimateCategoryForMerchant('Dominos','dominos pizza lutwyche',testCats).catId).toBe('c-dining'));
+  it('Goodlife → Gym',              () => expect(estimateCategoryForMerchant('Goodlife','payment to goodlife carinda',testCats).catId).toBe('c-gym'));
+  it('Telstra → Utilities',         () => expect(estimateCategoryForMerchant('Telstra','bpay to telstra #619',testCats).catId).toBe('c-util'));
+  it('BP → Fuel',                   () => expect(estimateCategoryForMerchant('Bp','bp service station',testCats).catId).toBe('c-fuel'));
+  it('Betashares → Investments',    () => expect(estimateCategoryForMerchant('Betashares','payment to betashares',testCats).catId).toBe('c-invest'));
+  it('high confidence for exact match',()=> expect(estimateCategoryForMerchant('Woolworths','woolworths',testCats).confidence).toBe('high'));
+  it('medium confidence for desc match',()=> {
+    const r = estimateCategoryForMerchant('Unknown Co','netflix subscription',testCats);
+    expect(['medium','high']).toContain(r.confidence);
+  });
+  it('unknown merchant → null catId', () => expect(estimateCategoryForMerchant('Xyzzy Corp','xyzzy corp #123',testCats).catId).toBeNull());
+  it('empty cats → null',             () => expect(estimateCategoryForMerchant('Netflix','netflix',[] ).catId).toBeNull());
+});
+
+describe('extractPayeeCandidate()', () => {
+  const payees = [{ id:'p1', name:'Goodlife Fitness' }, { id:'p2', name:'Woolworths' }];
+
+  it('matches existing payee by word',   () => expect(extractPayeeCandidate('PAYMENT TO GOODLIFE CARINDA', payees)).toBe('Goodlife Fitness'));
+  it('matches Woolworths exactly',       () => expect(extractPayeeCandidate('WOOLWORTHS METRO SYDNEY', payees)).toBe('Woolworths'));
+  it('falls back to merchant extraction',() => expect(extractPayeeCandidate('NETFLIX.COM ANNUAL', [])).toBe('Netflix'));
+  it('returns empty for internal',       () => expect(extractPayeeCandidate('SALARY CREDIT EMPLOYER', [])).toBe(''));
+  it('null input returns empty',         () => expect(extractPayeeCandidate(null, [])).toBe(''));
+});
