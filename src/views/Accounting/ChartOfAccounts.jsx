@@ -132,7 +132,29 @@ function DrillPanel({ cat, txns, setTxns, catMap, cats, dateFrom, dateTo, onClos
   const [editId,    setEditId]    = useState(null);
   const [editDesc,  setEditDesc]  = useState('');
   const [editNote,  setEditNote]  = useState('');
-  const [editCat,   setEditCat]   = useState('');  // reassign category
+  const [editCat,   setEditCat]   = useState('');
+  const [selected,  setSelected]  = useState(new Set()); // bulk select txn ids
+  const [bulkCat,   setBulkCat]   = useState('');        // bulk re-cat target
+
+  function toggleSelect(id) {
+    setSelected(p => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  }
+  function selectAll()  { setSelected(new Set(catTxns.map(t=>t.id))); }
+  function clearSel()   { setSelected(new Set()); }
+
+  async function bulkRecategorise() {
+    if (!bulkCat || selected.size === 0) return;
+    const ids = [...selected];
+    await Promise.all(ids.map(id => updateTransaction(id, { category_id: bulkCat })));
+    if (setTxns) {
+      setTxns(prev => prev.map(t => selected.has(t.id)
+        ? { ...t, cat: bulkCat, category_id: bulkCat }
+        : t
+      ));
+    }
+    toast(`${ids.length} transactions re-categorised.`);
+    clearSel(); setBulkCat('');
+  }
 
   async function saveEdit(txn) {
     const updates = { description: editDesc, note: editNote || null };
@@ -177,6 +199,33 @@ function DrillPanel({ cat, txns, setTxns, catMap, cats, dateFrom, dateTo, onClos
         ))}
       </div>
 
+      {/* Bulk action bar */}
+      {catTxns.length > 0 && (
+        <div style={{ padding:'7px 18px', background:'var(--sand)', borderBottom:'0.5px solid var(--bd)', display:'flex', alignItems:'center', gap:10, flexShrink:0, flexWrap:'wrap' }}>
+          <input type="checkbox" checked={selected.size===catTxns.length && catTxns.length>0}
+            onChange={e => e.target.checked ? selectAll() : clearSel()}
+            style={{ cursor:'pointer' }} />
+          <span style={{ fontSize:11.5, color:'var(--stone)' }}>
+            {selected.size > 0 ? `${selected.size} of ${catTxns.length} selected` : `${catTxns.length} transactions`}
+          </span>
+          {selected.size > 0 && (
+            <>
+              <select value={bulkCat} onChange={e=>setBulkCat(e.target.value)}
+                style={{ fontSize:12, padding:'4px 8px', border:'0.5px solid var(--bd2)', borderRadius:'var(--rr)', background:'#FDFAF6', fontFamily:'var(--font-sans)', flex:1, minWidth:140 }}>
+                <option value="">Move to account…</option>
+                {(cats||[]).filter(c2=>c2.id!==cat.id).sort((a,b)=>a.l.localeCompare(b.l)).map(c2=>(
+                  <option key={c2.id} value={c2.id}>{c2.l} ({c2.t})</option>
+                ))}
+              </select>
+              <button className="btn btn-a btn-sm" onClick={bulkRecategorise} disabled={!bulkCat}>
+                Move {selected.size}
+              </button>
+              <button className="btn btn-sm" onClick={clearSel} style={{ color:'var(--stone)' }}>Clear</button>
+            </>
+          )}
+        </div>
+      )}
+
       {/* Transaction list */}
       <div style={{ flex:1, overflowY:'auto' }}>
         {catTxns.length === 0 ? (
@@ -213,7 +262,9 @@ function DrillPanel({ cat, txns, setTxns, catMap, cats, dateFrom, dateTo, onClos
               </div>
             ) : (
               // ── Read view ─────────────────────────────────────────────────
-              <div style={{ display:'flex', alignItems:'flex-start', gap:12 }}>
+              <div style={{ display:'flex', alignItems:'flex-start', gap:10 }}>
+                <input type="checkbox" checked={selected.has(t.id)} onChange={()=>toggleSelect(t.id)}
+                  onClick={e=>e.stopPropagation()} style={{ cursor:'pointer', marginTop:3, flexShrink:0 }} />
                 <div style={{ flex:1, minWidth:0 }}>
                   <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', gap:8 }}>
                     <span style={{ fontSize:12.5, fontWeight:500, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', flex:1 }}>{t.desc}</span>

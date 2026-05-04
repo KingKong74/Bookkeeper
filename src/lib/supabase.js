@@ -162,6 +162,8 @@ export async function bulkImportTransactions(orgId, transactions) {
     date:        t.date,
     description: t.desc || t.description,
     amount:      t.amt  ?? t.amount,
+    category_id: t.cat || t.category_id || null,
+    payee_id:    t.payee_id || null,
     note:        t.note || null,
     imported:    true,
     account_id:  t.account_id || null,

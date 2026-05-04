@@ -122,6 +122,92 @@ export function payeeColor(name, payeesList = []) {
   return PALETTE[hash % PALETTE.length];
 }
 
+const BANK_DESC_NOISE = new Set([
+  'payment', 'purchase', 'transfer', 'debit', 'credit', 'direct', 'entry',
+  'eftpos', 'visa', 'mastercard', 'card', 'pos', 'online', 'internet', 'banking',
+  'pay', 'to', 'from', 'the', 'pty', 'ltd', 'limited', 'australia', 'aus',
+  'nsw', 'qld', 'vic', 'wa', 'sa', 'tas', 'act', 'nt',
+]);
+
+const KNOWN_PAYEE_WORDS = {
+  woolworths: 'Woolworths',
+  coles: 'Coles',
+  aldi: 'ALDI',
+  iga: 'IGA',
+  bunnings: 'Bunnings',
+  kmart: 'Kmart',
+  target: 'Target',
+  amazon: 'Amazon',
+  netflix: 'Netflix',
+  spotify: 'Spotify',
+  uber: 'Uber',
+  doordash: 'DoorDash',
+  menulog: 'Menulog',
+  paypal: 'PayPal',
+  goodlife: 'Goodlife Fitness',
+  officeworks: 'Officeworks',
+  chemist: 'Chemist Warehouse',
+  mcdonalds: "McDonald's",
+  mcdonald: "McDonald's",
+};
+
+function titleCasePayee(raw) {
+  return (raw || '')
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(w => KNOWN_PAYEE_WORDS[w] || (w.length <= 3 ? w.toUpperCase() : w[0].toUpperCase() + w.slice(1)))
+    .join(' ');
+}
+
+/**
+ * Extract a stable merchant/payee candidate from noisy bank descriptions.
+ * e.g. "WOOLWORTHS/543 LUTWYCHE R LUTWYCHE" -> "Woolworths"
+ */
+export function extractPayeeCandidate(description, knownPayees = []) {
+  const raw = (description || '').trim();
+  if (!raw) return '';
+
+  const descLower = raw.toLowerCase();
+  const known = (knownPayees || [])
+    .map(p => typeof p === 'string' ? p : p?.name)
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length);
+  const knownMatch = known.find(name => {
+    const n = name.toLowerCase();
+    return n.length > 2 && (descLower.includes(n) || n.split(/\s+/).some(w => w.length > 3 && descLower.includes(w)));
+  });
+  if (knownMatch) return knownMatch;
+
+  const normalised = raw
+    .replace(/&/g, ' and ')
+    .replace(/[*/\\|:;,_()[\]{}]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const tokens = normalised.split(/\s+/)
+    .map(t => t.replace(/^[^a-zA-Z0-9]+|[^a-zA-Z0-9.-]+$/g, ''))
+    .filter(Boolean);
+
+  const meaningful = [];
+  for (const token of tokens) {
+    const lower = token.toLowerCase();
+    if (KNOWN_PAYEE_WORDS[lower]) return KNOWN_PAYEE_WORDS[lower];
+    if (/\d/.test(token)) continue;
+    if (token.length < 3) continue;
+    if (BANK_DESC_NOISE.has(lower)) continue;
+    meaningful.push(token);
+    if (meaningful.length >= 2) break;
+  }
+
+  return titleCasePayee(meaningful.join(' '));
+}
+
+export function extractRuleKeyword(description, knownPayees = []) {
+  const candidate = extractPayeeCandidate(description, knownPayees);
+  return candidate ? candidate.toLowerCase() : '';
+}
+
 // ── Transaction filtering ─────────────────────────────────────────────────────
 
 /**
@@ -425,5 +511,120 @@ export function buildBSFromJournals(journals, dateFrom, dateTo, catMap, accountM
     assetLines, liabilityLines, equityLines,
     totalAssets, totalLiabilities, totalEquity, totalLE: totalLiabilities + totalEquity,
     balanced,
+  };
+}
+
+/**
+ * analyseImportedTransactions(transactions, existingRules, catMap, payees)
+ * -------------------------------------------------------------------------
+ * Analyses a batch of imported transactions to discover:
+ *   1. Payees that appear repeatedly → suggest adding as a payee
+ *   2. Descriptions that match existing payee names → auto-suggest payee
+ *   3. Keywords from existing rules that match → flag as auto-cat candidates
+ *   4. New recurring patterns → suggest creating rules
+ *
+ * Returns:
+ *   {
+ *     suggestions:    [ { txnId, sugCat, sugPayee, confidence, reason } ]
+ *     newPayees:      [ { name, count, txnIds } ]  — payee names not yet in list
+ *     ruleOpportunities: [ { keyword, count, exampleDesc } ]  — suggest new rules
+ *   }
+ */
+export function analyseImportedTransactions(transactions, existingRules, catMap, payees) {
+  const suggestions       = [];
+  const descFrequency     = {};   // normalised description → [txnIds]
+
+  const payeeNames = (payees || []).map(p => p.name.toLowerCase());
+
+  // Run existing rules first
+  const ruleResults = runAutoCatRules(transactions, existingRules || []);
+  const ruleMap     = Object.fromEntries(ruleResults.map(r => [r.txnId, r]));
+
+  for (const t of transactions) {
+    const desc = (t.desc || t.description || '').trim();
+    const id   = t.id || t._key;
+
+    // 1. Carry through rule suggestions
+    if (ruleMap[id]) {
+      suggestions.push({
+        txnId:      id,
+        sugCat:     ruleMap[id].sugCat,
+        sugPayee:   ruleMap[id].sugPayee,
+        confidence: ruleMap[id].confidence,
+        reason:     `Rule: "${ruleMap[id].rule}"`,
+      });
+    }
+
+    // 2. Extract a normalised key from the merchant/payee part of the description.
+    const payeeCandidate = extractPayeeCandidate(desc, payees || []);
+    const normKey = extractRuleKeyword(desc, payees || []);
+
+    if (normKey.length > 3) {
+      if (!descFrequency[normKey]) descFrequency[normKey] = [];
+      descFrequency[normKey].push({ id, desc, payeeCandidate });
+    }
+
+    // 3. Check if any existing payee name appears in the description
+    // Match either full name or any significant word from the payee name
+    for (const pName of payeeNames) {
+      const pWords = pName.split(/\s+/).filter(w => w.length > 3);
+      const descLow = desc.toLowerCase();
+      const matches = pName.length > 3 && (descLow.includes(pName) || pWords.some(w => descLow.includes(w)));
+      if (matches) {
+        if (!ruleMap[id]?.sugPayee) {
+          const existing = suggestions.find(s => s.txnId === id);
+          if (existing) {
+            existing.sugPayee = payees.find(p => p.name.toLowerCase() === pName)?.name;
+          } else {
+            suggestions.push({
+              txnId:      id,
+              sugCat:     null,
+              sugPayee:   payees.find(p => p.name.toLowerCase() === pName)?.name,
+              confidence: 'Medium',
+              reason:     `Payee name "${pName}" found in description`,
+            });
+          }
+        }
+        break;
+      }
+    }
+  }
+
+  // 4. Find new repeating patterns (appear 2+ times, no existing rule)
+  const ruleOpportunities = [];
+  for (const [keyword, instances] of Object.entries(descFrequency)) {
+    if (instances.length < 2) continue;
+    const alreadyHasRule = (existingRules || []).some(r =>
+      keyword.includes(r.keyword?.toLowerCase()) || r.keyword?.toLowerCase().includes(keyword)
+    );
+    if (!alreadyHasRule) {
+      ruleOpportunities.push({
+        keyword,
+        payee:       instances[0].payeeCandidate || titleCasePayee(keyword),
+        count:       instances.length,
+        exampleDesc: instances[0].desc,
+        txnIds:      instances.map(i => i.id),
+      });
+    }
+  }
+
+  // 5. Find new payees (descriptions that appear 2+ times, not yet in payees list)
+  const newPayees = [];
+  for (const [keyword, instances] of Object.entries(descFrequency)) {
+    if (instances.length < 2) continue;
+    const alreadyPayee = payeeNames.some(p => p.includes(keyword) || keyword.includes(p));
+    if (!alreadyPayee) {
+      newPayees.push({
+        name:    instances[0].payeeCandidate || titleCasePayee(keyword),
+        count:   instances.length,
+        txnIds:  instances.map(i => i.id),
+      });
+    }
+  }
+
+  return {
+    suggestions:       suggestions.filter(s => s.sugCat || s.sugPayee),
+    newPayees:         newPayees.slice(0, 10),         // top 10
+    ruleOpportunities: ruleOpportunities.slice(0, 10), // top 10
   };
 }

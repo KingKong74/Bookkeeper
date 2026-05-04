@@ -12,6 +12,7 @@ import React, { useState, useMemo } from 'react';
 import { useApp } from '../../context/AppContext';
 import { PeriodBar } from '../../components/ui/PeriodBar';
 import { BalanceAlert, MetricCard, PayeeAvatar } from '../../components/ui/index';
+import { upsertPayee } from '../../lib/supabase';
 import { fmt, fmtSigned, filterByDateRange, buildAccountTotals, buildTBFromJournals, buildPLFromJournals, buildBSFromJournals, isTBBalanced, payeeColor, dateRangeLabel } from '../../utils/helpers';
 
 // ── A4 paper wrapper ──────────────────────────────────────────────────────────
@@ -579,8 +580,28 @@ export function BalanceSheet() {
 
 // ── Payee Report ──────────────────────────────────────────────────────────────
 export function PayeeReport() {
-  const { txns, catMap, payees, dateFrom, dateTo } = useApp();
-  const [compare, setCompare] = useState('none');
+  const { txns, catMap, payees, setPayees, org, PALETTE, dateFrom, dateTo, toast } = useApp();
+  const [compare,   setCompare]   = useState('none');
+  const [editPayee, setEditPayee] = useState(null);    // { id, name, colour } | 'new'
+  const [editForm,  setEditForm]  = useState({ name:'', colour:'' });
+  const [saving,    setSaving]    = useState(false);
+
+  async function savePayee() {
+    if (!editForm.name.trim()) return;
+    setSaving(true);
+    try {
+      // upsertPayee is statically imported at top of file
+      const col = editForm.colour || (PALETTE||[])[payees.length % (PALETTE||['#888']).length] || '#888';
+      const p   = await upsertPayee(org.id, editForm.name.trim(), col);
+      setPayees(prev => {
+        const exists = prev.find(x=>x.id===p.id);
+        return exists ? prev.map(x=>x.id===p.id?p:x) : [...prev, p];
+      });
+      toast(`Payee "${p.name}" saved.`);
+      setEditPayee(null);
+    } catch(e) { toast('Error: '+e.message); }
+    finally { setSaving(false); }
+  }
   const ft = filterByDateRange(txns, dateFrom, dateTo);
   const priorDates = getPriorDates(compare, dateFrom, dateTo);
   const ftP = priorDates ? filterByDateRange(txns, priorDates[0], priorDates[1]) : [];
@@ -612,7 +633,11 @@ export function PayeeReport() {
       </div>
       <CompareBar compare={compare} setCompare={setCompare} />
       <div className="card">
-        <div className="ch"><h3>Payee summary</h3></div>
+        <div className="ch"><h3>Payee summary</h3>
+          <div className="ch-r">
+            <button className="btn btn-a btn-sm" onClick={()=>{ setEditForm({ name:'', colour:(PALETTE||[])[payees.length%(PALETTE||['#888']).length]||'#888' }); setEditPayee('new'); }}>+ Add payee</button>
+          </div>
+        </div>
         <table>
           <thead>
             <tr>
@@ -624,6 +649,7 @@ export function PayeeReport() {
               {compare!=='none'&&<th className="tr">Prior net</th>}
               {compare!=='none'&&<th className="tr">Variance</th>}
               <th>Categories</th>
+              <th />
             </tr>
           </thead>
           <tbody>
@@ -644,6 +670,17 @@ export function PayeeReport() {
                   {compare!=='none'&&<td className="tr" style={{ color:'var(--stone)' }}>{prior?fmtSigned(prior.total):'—'}</td>}
                   {compare!=='none'&&<td className={`tr ${variance===null?'':(variance>=0?'vp':'vn')}`}>{variance!==null?fmtSigned(variance):'—'}</td>}
                   <td style={{ fontSize:11, color:'var(--stone)' }}>{[...v.cats].join(', ')||'—'}</td>
+                  <td>
+                    {name!=='(No payee)' && (() => {
+                      const p = payees.find(px=>px.name===name);
+                      return p ? (
+                        <button className="btn btn-sm" style={{ fontSize:10 }}
+                          onClick={()=>{ setEditForm({ name:p.name, colour:p.colour||p.col||'#888' }); setEditPayee(p); }}>
+                          Edit
+                        </button>
+                      ) : null;
+                    })()}
+                  </td>
                 </tr>
               );
             })}

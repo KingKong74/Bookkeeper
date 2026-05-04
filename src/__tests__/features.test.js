@@ -52,6 +52,11 @@ describe('ImportStatement', () => {
   it('per-file section headers',() => expect(has(f,'_fileIdx')).toBe(true));
   it('add more files button',  () => expect(has(f,'Add more files')).toBe(true));
   it('remove individual file', () => expect(has(f,'keysToRemove')).toBe(true));
+  it('rule builder modal',     () => expect(has(f,'showRuleBuilder')).toBe(true));
+  it('rule builder forms',     () => expect(has(f,'ruleBuilderForms')).toBe(true));
+  it('review & add rules btn', () => expect(has(f,'Review & add rules')).toBe(true));
+  it('saves rules to DB',      () => expect(has(f,'createRule')).toBe(true));
+  it('no dynamic imports',     () => expect(has(f,'await import')).toBe(false));
 });
 
 describe('BankAccounts', () => {

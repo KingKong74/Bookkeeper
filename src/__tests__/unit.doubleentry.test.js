@@ -366,3 +366,92 @@ describe('buildBSFromJournals()', () => {
     }
   });
 });
+
+// ── consolidateLines() — inline (matches Journals.jsx logic) ──────────────────
+function consolidateLines(lines) {
+  const map = {};
+  for (const l of lines) {
+    const name = l.account_name || l.ac || '—';
+    if (!map[name]) map[name] = { account_name: name, debit: 0, credit: 0 };
+    map[name].debit  += parseFloat(l.debit  || l.dr  || 0);
+    map[name].credit += parseFloat(l.credit || l.cr  || 0);
+  }
+  return Object.values(map).filter(r => r.debit > 0.005 || r.credit > 0.005);
+}
+
+describe('consolidateLines() — general ledger consolidation', () => {
+  const rawLines = [
+    { account_name:'Dining & Café', debit:6,    credit:0    },
+    { account_name:'ANZ First CC',  debit:0,    credit:6    },
+    { account_name:'Dining & Café', debit:3.32, credit:0    },
+    { account_name:'ANZ First CC',  debit:0,    credit:3.32 },
+    { account_name:'Groceries',     debit:45.8, credit:0    },
+    { account_name:'ANZ First CC',  debit:0,    credit:45.8 },
+  ];
+
+  const consolidated = consolidateLines(rawLines);
+
+  it('reduces 6 lines to 3 accounts',               () => expect(consolidated.length).toBe(3));
+  it('Dining & Café DR = $9.32',                    () => expect(consolidated.find(r=>r.account_name==='Dining & Café')?.debit).toBeCloseTo(9.32,2));
+  it('ANZ First CC CR = $55.12',                    () => expect(consolidated.find(r=>r.account_name==='ANZ First CC')?.credit).toBeCloseTo(55.12,2));
+  it('Groceries DR = $45.80',                       () => expect(consolidated.find(r=>r.account_name==='Groceries')?.debit).toBeCloseTo(45.80,2));
+  it('total DR = total CR (still balanced)',         () => {
+    const dr = consolidated.reduce((s,r)=>s+r.debit,0);
+    const cr = consolidated.reduce((s,r)=>s+r.credit,0);
+    expect(Math.abs(dr-cr)).toBeLessThan(0.01);
+  });
+  it('adding a new entry updates consolidated',     () => {
+    const withNew = [...rawLines,
+      { account_name:'Dining & Café', debit:1,   credit:0 },
+      { account_name:'ANZ First CC',  debit:0,   credit:1 },
+    ];
+    const c2 = consolidateLines(withNew);
+    expect(c2.find(r=>r.account_name==='Dining & Café')?.debit).toBeCloseTo(10.32,2);
+    expect(c2.find(r=>r.account_name==='ANZ First CC')?.credit).toBeCloseTo(56.12,2);
+  });
+  it('empty input returns empty array',             () => expect(consolidateLines([])).toEqual([]));
+  it('zero-amount lines are filtered out',          () => {
+    const withZero = [...rawLines, { account_name:'Empty', debit:0, credit:0 }];
+    const c2 = consolidateLines(withZero);
+    expect(c2.find(r=>r.account_name==='Empty')).toBeUndefined();
+  });
+});
+
+// ── analyseImportedTransactions() ────────────────────────────────────────────
+import { analyseImportedTransactions } from '../utils/helpers.js';
+
+describe('analyseImportedTransactions() — smart auto-cat', () => {
+  const rules = [{ id:'r1', keyword:'WOOLWORTHS', catId:'c-groc', payee:'Woolworths', amtExact:'', amtMin:'', amtMax:'', direction:'' }];
+  const payees = [{ id:'p1', name:'Goodlife Fitness', col:'#3B6D11' }];
+
+  const txns = [
+    { id:'t1', desc:'WOOLWORTHS 3847 SYDNEY',              amt:-92,   date:'2026-03-04', cat:null, payee:'' },
+    { id:'t2', desc:'WOOLWORTHS ONLINE 9182',              amt:-55,   date:'2026-03-10', cat:null, payee:'' },
+    { id:'t3', desc:'PAYMENT TO GOODLIFE CARINDA A00LK',   amt:-17.49,date:'2026-03-05', cat:null, payee:'' },
+    { id:'t4', desc:'PAYMENT TO GOODLIFE CARINDA A00QR',   amt:-17.49,date:'2026-03-19', cat:null, payee:'' },
+    { id:'t5', desc:'NETFLIX.COM ANNUAL',                  amt:-129,  date:'2026-03-08', cat:null, payee:'' },
+    { id:'t6', desc:'NETFLIX.COM ANNUAL',                  amt:-129,  date:'2026-04-08', cat:null, payee:'' },
+  ];
+
+  const result = analyseImportedTransactions(txns, rules, {}, payees);
+
+  it('returns suggestions array',                () => expect(Array.isArray(result.suggestions)).toBe(true));
+  it('woolworths rule fires for t1',             () => expect(result.suggestions.find(s=>s.txnId==='t1')?.sugCat).toBe('c-groc'));
+  it('woolworths rule fires for t2',             () => expect(result.suggestions.find(s=>s.txnId==='t2')?.sugCat).toBe('c-groc'));
+  it('goodlife payee name found in desc',        () => {
+    const s = result.suggestions.find(s=>s.txnId==='t3'||s.txnId==='t4');
+    expect(s?.sugPayee).toBe('Goodlife Fitness');
+  });
+  it('netflix repeating pattern detected',       () => {
+    const opp = result.ruleOpportunities.find(o=>o.keyword.includes('netflix'));
+    expect(opp).toBeDefined();
+    expect(opp.count).toBe(2);
+  });
+  it('rule opportunities has count >= 2',        () => result.ruleOpportunities.forEach(o => expect(o.count).toBeGreaterThanOrEqual(2)));
+  it('empty transactions returns empty results', () => {
+    const r = analyseImportedTransactions([], rules, {}, payees);
+    expect(r.suggestions.length).toBe(0);
+    expect(r.ruleOpportunities.length).toBe(0);
+  });
+  it('null rules does not throw',                () => expect(()=>analyseImportedTransactions(txns,null,{},[]) ).not.toThrow());
+});
