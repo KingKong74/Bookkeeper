@@ -196,8 +196,8 @@ describe('Transactions - search inputs opaque', () => {
     );
     expect(transparentInDropdown).toBe(false);
   });
-  it('pending category shows name',    () => expect(has(f,'pendingCat.l')).toBe(true));
-  it('pending category shows colour',  () => expect(has(f,'pendingCat.col')).toBe(true));
+  it('pending category uses InlineCatPicker with suggestionCatId', () => expect(has(f,'suggestionCatId')).toBe(true));
+  it('pending category has dismiss button',  () => expect(has(f,'Dismiss suggestion')).toBe(true));
 });
 
 describe('ImportStatement — loading + redirect', () => {
