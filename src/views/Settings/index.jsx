@@ -1,9 +1,9 @@
 /**
- * views/Settings/index.jsx
- * App-wide settings page
+ * views/Settings/index.jsx — App-wide settings page
  */
 import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
+import { updateOrgSetting, upsertMerchantHint, disableMerchantHint } from '../../lib/supabase';
 import { clearSessionPref } from '../../hooks/useSessionPref';
 
 function Section({ title, children }) {
@@ -14,6 +14,7 @@ function Section({ title, children }) {
     </div>
   );
 }
+
 function Row({ label, sub, children }) {
   return (
     <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'11px 16px', borderBottom:'0.5px solid var(--bd)' }}>
@@ -25,6 +26,7 @@ function Row({ label, sub, children }) {
     </div>
   );
 }
+
 function Toggle({ value, onChange }) {
   return (
     <div onClick={() => onChange(!value)} style={{ width:40, height:22, borderRadius:11, cursor:'pointer', transition:'background 0.2s', background:value?'#BA7517':'var(--sand3)', position:'relative' }}>
@@ -34,12 +36,22 @@ function Toggle({ value, onChange }) {
 }
 
 export function Settings() {
-  const { org, user, reloadAll, toast, txns, accounts, cats } = useApp();
-  const [showCents,   setShowCents]   = useState(() => localStorage.getItem('pref_show_cents')   !== 'false');
-  const [compactRows, setCompactRows] = useState(() => localStorage.getItem('pref_compact_rows') === 'true');
-  const [currency,    setCurrency]    = useState(() => localStorage.getItem('pref_currency')     || 'AUD');
-  const [dateFormat,  setDateFormat]  = useState(() => localStorage.getItem('pref_date_format')  || 'dd/mm/yyyy');
-  const [fyCutoff,    setFyCutoff]    = useState(() => localStorage.getItem('pref_fy_cutoff')    || 'july');
+  const { org, user, reloadAll, toast, txns, accounts, cats, orgSettings, setOrgSettings, merchantHints, setMerchantHints } = useApp();
+  const [showHints,    setShowHints]    = useState(false);
+  const [hintSearch,   setHintSearch]   = useState('');
+  const [editingHint,  setEditingHint]  = useState(null);
+  const [savingHint,   setSavingHint]   = useState(false);
+  const [showCents,    setShowCents]    = useState(() => localStorage.getItem('pref_show_cents')   !== 'false');
+  const [compactRows,  setCompactRows]  = useState(() => localStorage.getItem('pref_compact_rows') === 'true');
+  const [currency,     setCurrency]     = useState(() => localStorage.getItem('pref_currency')     || 'AUD');
+  const [dateFormat,   setDateFormat]   = useState(() => localStorage.getItem('pref_date_format')  || 'dd/mm/yyyy');
+  const [fyCutoff,     setFyCutoff]     = useState(() => localStorage.getItem('pref_fy_cutoff')    || 'july');
+  const [darkMode,     setDarkMode]     = useState(() => localStorage.getItem('pref_dark_mode') === 'true');
+
+  // Apply dark mode on mount and when toggled
+  React.useEffect(() => {
+    document.documentElement.setAttribute('data-theme', darkMode ? 'dark' : 'light');
+  }, [darkMode]);
 
   function savePref(k, v) { localStorage.setItem(`pref_${k}`, v); }
   function toggle(k, setter, v) { setter(v); savePref(k, v); }
@@ -61,6 +73,9 @@ export function Settings() {
       </Section>
 
       <Section title="Display">
+        <Row label="Dark mode" sub="Switch to dark colour scheme">
+          <Toggle value={darkMode} onChange={v => { setDarkMode(v); savePref('dark_mode', v); document.documentElement.setAttribute('data-theme', v ? 'dark' : 'light'); }} />
+        </Row>
         <Row label="Show cents" sub="Display decimal places on whole dollar amounts"><Toggle value={showCents} onChange={v=>toggle('show_cents',setShowCents,v)} /></Row>
         <Row label="Compact rows" sub="Reduce row height in transaction table"><Toggle value={compactRows} onChange={v=>toggle('compact_rows',setCompactRows,v)} /></Row>
         <Row label="Currency">
@@ -82,6 +97,85 @@ export function Settings() {
             <option value="april">1 April — UK FY</option>
           </select>
         </Row>
+      </Section>
+
+      <Section title="Intelligence">
+        <Row label="Merchant intelligence"
+          sub="Suggest categories based on merchant name (Woolworths → Groceries, Netflix → Subscriptions). Suggestions are hints only — never applied without your approval.">
+          <Toggle
+            value={orgSettings?.merchantIntelEnabled !== false}
+            onChange={async v => {
+              try {
+                await updateOrgSetting(org.id, 'merchantIntelEnabled', v);
+                setOrgSettings(prev => ({ ...prev, merchantIntelEnabled: v }));
+                toast(`Merchant intelligence ${v ? 'enabled' : 'disabled'}.`);
+              } catch(e) { toast('Error: ' + e.message); }
+            }} />
+        </Row>
+        <Row label="Merchant hints"
+          sub={`${(merchantHints||[]).filter(h=>h.org_id).length} custom · ${(merchantHints||[]).filter(h=>!h.org_id).length} built-in`}>
+          <button className="btn btn-sm" onClick={() => setShowHints(v=>!v)}>{showHints ? 'Hide' : 'Manage hints'}</button>
+        </Row>
+        {showHints && (
+          <div style={{ padding:'0 16px 16px' }}>
+            <div style={{ display:'flex', gap:8, marginBottom:10 }}>
+              <input placeholder="Search hints…" value={hintSearch} onChange={e=>setHintSearch(e.target.value)}
+                style={{ flex:1, padding:'5px 10px', fontSize:12, border:'0.5px solid var(--bd2)', borderRadius:'var(--rr)', background:'#FDFAF6', fontFamily:'var(--font-sans)' }} />
+              <button className="btn btn-a btn-sm" onClick={()=>setEditingHint({keyword:'',hint:'',cat_type:'expense',isNew:true})}>+ Add hint</button>
+            </div>
+            {editingHint && (
+              <div style={{ marginBottom:10, padding:12, background:'var(--sand)', borderRadius:'var(--rr)', border:'0.5px solid var(--bd)' }}>
+                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr auto', gap:8, alignItems:'end' }}>
+                  {[['Merchant keyword','keyword','e.g. bunnings'],['Category hint','hint','e.g. home improvement']].map(([lbl,field,ph])=>(
+                    <div key={field}>
+                      <div style={{ fontSize:10, fontWeight:500, color:'var(--stone)', marginBottom:3, textTransform:'uppercase' }}>{lbl}</div>
+                      <input value={editingHint[field]} onChange={e=>setEditingHint(h=>({...h,[field]:e.target.value}))}
+                        placeholder={ph} style={{ width:'100%', boxSizing:'border-box', padding:'5px 8px', fontSize:12.5, border:'0.5px solid var(--bd2)', borderRadius:'var(--rr)', background:'#FDFAF6', fontFamily:'var(--font-sans)' }} />
+                    </div>
+                  ))}
+                  <div style={{ display:'flex', gap:5, alignItems:'flex-end' }}>
+                    <select value={editingHint.cat_type} onChange={e=>setEditingHint(h=>({...h,cat_type:e.target.value}))}
+                      style={{ padding:'5px 8px', fontSize:12, border:'0.5px solid var(--bd2)', borderRadius:'var(--rr)', background:'#FDFAF6', fontFamily:'var(--font-sans)' }}>
+                      {['expense','income','asset','liability','equity'].map(t=><option key={t} value={t}>{t}</option>)}
+                    </select>
+                    <button className="btn btn-a btn-sm" disabled={savingHint||!editingHint.keyword.trim()||!editingHint.hint.trim()}
+                      onClick={async()=>{
+                        setSavingHint(true);
+                        try {
+                          const h = await upsertMerchantHint(org.id, editingHint.keyword, editingHint.hint, editingHint.cat_type);
+                          setMerchantHints(prev=>[...prev.filter(x=>!(x.org_id===org.id&&x.keyword===h.keyword)),h]);
+                          setEditingHint(null); toast('Hint saved.');
+                        } catch(e) { toast('Error: '+e.message); }
+                        finally { setSavingHint(false); }
+                      }}>{savingHint?'Saving…':'Save'}</button>
+                    <button className="btn btn-sm" onClick={()=>setEditingHint(null)}>Cancel</button>
+                  </div>
+                </div>
+              </div>
+            )}
+            <div style={{ border:'0.5px solid var(--bd)', borderRadius:'var(--rr)', overflow:'hidden', maxHeight:300, overflowY:'auto' }}>
+              {(merchantHints||[])
+                .filter(h => !hintSearch || h.keyword.includes(hintSearch.toLowerCase()) || h.hint.includes(hintSearch.toLowerCase()))
+                .sort((a,b) => a.keyword.localeCompare(b.keyword))
+                .map(h => (
+                  <div key={h.id} style={{ display:'flex', alignItems:'center', padding:'6px 12px', borderBottom:'0.5px solid var(--bd)', background:h.org_id?'rgba(186,117,23,0.04)':'#FDFAF6', fontSize:12 }}>
+                    <span style={{ flex:'0 0 150px', fontWeight:500 }}>{h.keyword}</span>
+                    <span style={{ flex:1, color:'var(--stone)' }}>{h.hint}</span>
+                    <span style={{ fontSize:10, padding:'1px 6px', borderRadius:99, marginRight:8, background:h.org_id?'var(--al)':'var(--sand2)', color:h.org_id?'var(--a2)':'var(--stone)' }}>{h.org_id?'custom':'built-in'}</span>
+                    <span style={{ fontSize:10, color:'var(--stone)', marginRight:8, minWidth:55 }}>{h.cat_type}</span>
+                    <div style={{ display:'flex', gap:4 }}>
+                      <button className="btn btn-sm" style={{ fontSize:10 }} onClick={()=>setEditingHint({...h,isNew:false})}>Edit</button>
+                      {h.org_id && <button className="btn btn-sm" style={{ fontSize:10, color:'var(--rd)' }}
+                        onClick={async()=>{ await disableMerchantHint(h.id); setMerchantHints(p=>p.filter(x=>x.id!==h.id)); toast('Hint removed.'); }}>
+                        Remove
+                      </button>}
+                    </div>
+                  </div>
+                ))}
+            </div>
+            <div style={{ fontSize:11, color:'var(--stone)', marginTop:6 }}>Custom hints override built-in ones with the same keyword.</div>
+          </div>
+        )}
       </Section>
 
       <Section title="Prompts">

@@ -157,59 +157,70 @@ export async function deleteTransaction(id) {
  * Returns { inserted, skipped } counts.
  */
 export async function bulkImportTransactions(orgId, transactions) {
-  const withHash = transactions.map(t => ({
-    org_id:      orgId,
-    date:        t.date,
-    description: t.desc || t.description,
-    amount:      t.amt  ?? t.amount,
-    note:        t.note || null,
-    imported:    true,
-    account_id:  t.account_id || null,
-    import_hash: `${t.date}|${(t.desc||t.description||'')}|${(t.amt??t.amount)}`,
-  }));
+  // Build hashes with occurrence index so legitimate duplicate-looking transactions
+  // (e.g. WOOLWORTHS -$4.27 three times on the same day) are kept distinct.
+  // Hash format: date|description|amount|N  (N = 0-based occurrence count per hash)
+  const hashOccurrence = {};
+  const withHash = transactions.map(t => {
+    const baseHash = `${t.date}|${(t.desc||t.description||'')}|${(t.amt??t.amount)}`;
+    const n = hashOccurrence[baseHash] ?? 0;
+    hashOccurrence[baseHash] = n + 1;
+    const import_hash = n === 0 ? baseHash : `${baseHash}|${n}`;
+    return {
+      org_id:       orgId,
+      date:         t.date,
+      description:  t.desc || t.description,
+      amount:       t.amt  ?? t.amount,
+      note:         t.note || null,
+      imported:     true,
+      account_id:   t.account_id   || null,
+      category_id:  t.category_id  || t.cat || null,
+      payee_id:     t.payee_id     || null,
+      import_hash,
+    };
+  });
 
-  // Fetch existing transactions with hashes so we can:
-  // a) skip true duplicates (same hash AND same account)
-  // b) update account_id on existing transactions that are missing it
-  const { data: existing } = await supabase
+  // Fetch ALL existing hashes for this org (one lightweight query, no URL length issues).
+  // IN() with long hashes causes 400 Bad Request when the URL exceeds ~8KB.
+  // A full org scan returning only 3 columns is fast even for 10k transactions.
+  const { data: existing = [] } = await supabase
     .from('transactions')
     .select('id, import_hash, account_id')
     .eq('org_id', orgId)
     .not('import_hash', 'is', null);
 
-  const existingByHash = {};
-  for (const e of (existing || [])) {
-    existingByHash[e.import_hash] = e;
-  }
+  const existingByHash = Object.fromEntries((existing).map(e => [e.import_hash, e]));
 
   const toInsert  = [];
-  const toUpdate  = []; // existing rows that need account_id set
+  const toUpdate  = [];
   let skipped = 0;
 
   for (const t of withHash) {
     const ex = existingByHash[t.import_hash];
     if (!ex) {
-      // New transaction — insert
       toInsert.push(t);
     } else if (t.account_id && !ex.account_id) {
-      // Exists but has no account linked — update it
       toUpdate.push({ id: ex.id, account_id: t.account_id });
     } else {
-      // True duplicate — skip
       skipped++;
     }
   }
 
-  if (toInsert.length > 0) {
-    const { error } = await supabase.from('transactions').insert(toInsert);
+  // Insert in chunks of 200 (Supabase recommends ≤500 rows per insert)
+  const INSERT_CHUNK = 200;
+  for (let i = 0; i < toInsert.length; i += INSERT_CHUNK) {
+    const chunk = toInsert.slice(i, i + INSERT_CHUNK);
+    // Plain insert — dedup is handled client-side above.
+    // If migration 008 has been run, the DB unique constraint acts as a
+    // belt-and-braces safety net; if not, client-side dedup is sufficient.
+    const { error } = await supabase.from('transactions').insert(chunk);
     if (error) throw error;
   }
 
-  // Batch update account_id for existing unlinked transactions
-  // Chunk into groups of 50 to avoid hitting Supabase limits
+  // Batch update account_id in parallel chunks of 50
   if (toUpdate.length > 0) {
     const chunks = [];
-    for (let i = 0; i < toUpdate.length; i += 50) chunks.push(toUpdate.slice(i, i+50));
+    for (let i = 0; i < toUpdate.length; i += 50) chunks.push(toUpdate.slice(i, i + 50));
     await Promise.all(
       chunks.flatMap(chunk =>
         chunk.map(u => supabase.from('transactions').update({ account_id: u.account_id }).eq('id', u.id))
@@ -754,4 +765,121 @@ export async function getJournalLinesForReports(orgId, dateFrom, dateTo) {
 
   if (error) throw error;
   return data ?? [];
+}
+
+// ════════════════════════════════════════════════════════════
+// MERCHANT HINTS
+// ════════════════════════════════════════════════════════════
+
+/** Fetch all merchant hints for this org (global + org-specific overrides) */
+export async function getMerchantHints(orgId) {
+  const { data, error } = await supabase
+    .from('merchant_hints')
+    .select('id, org_id, keyword, hint, cat_type, is_active')
+    .or(`org_id.is.null,org_id.eq.${orgId}`)
+    .eq('is_active', true)
+    .order('keyword');
+  if (error) throw error;
+  return data ?? [];
+}
+
+/** Upsert an org-level merchant hint (add or override a global one) */
+export async function upsertMerchantHint(orgId, keyword, hint, catType = 'expense') {
+  const { data, error } = await supabase
+    .from('merchant_hints')
+    .upsert(
+      { org_id: orgId, keyword: keyword.toLowerCase().trim(), hint, cat_type: catType, is_active: true },
+      { onConflict: 'org_id,keyword' }
+    )
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+/** Disable a merchant hint (soft-delete) */
+export async function disableMerchantHint(id) {
+  const { error } = await supabase
+    .from('merchant_hints')
+    .update({ is_active: false })
+    .eq('id', id);
+  if (error) throw error;
+}
+
+// ════════════════════════════════════════════════════════════
+// ORG SETTINGS
+// ════════════════════════════════════════════════════════════
+
+/** Get org settings object */
+export async function getOrgSettings(orgId) {
+  const { data, error } = await supabase
+    .from('organisations')
+    .select('settings')
+    .eq('id', orgId)
+    .single();
+  if (error) throw error;
+  return data?.settings ?? {};
+}
+
+/** Update a single org setting key — fetch current, merge, write back */
+export async function updateOrgSetting(orgId, key, value) {
+  const { data: current } = await supabase
+    .from('organisations')
+    .select('settings')
+    .eq('id', orgId)
+    .single();
+  const merged = { ...(current?.settings ?? {}), [key]: value };
+  const { data: updated, error } = await supabase
+    .from('organisations')
+    .update({ settings: merged })
+    .eq('id', orgId)
+    .select('settings')
+    .single();
+  if (error) throw error;
+  return updated?.settings ?? merged;
+}
+
+// ════════════════════════════════════════════════════════════
+// PENDING SUGGESTIONS
+// ════════════════════════════════════════════════════════════
+
+/** Save merchant intelligence suggestions to DB after import */
+export async function savePendingSuggestions(orgId, suggestions) {
+  if (!suggestions.length) return;
+  // suggestions: [{ txnId, sugCat, sugPayee, confidence, reason }]
+  const rows = suggestions
+    .filter(s => s.fromIntel && s.sugCat)
+    .map(s => ({
+      org_id:           orgId,
+      transaction_id:   s.txnId,
+      suggested_cat_id: s.sugCat,
+      suggested_payee:  s.sugPayee || null,
+      confidence:       (s.confidence || 'medium').toLowerCase(),
+      reason:           s.reason || null,
+      source:           'merchant_intel',
+    }));
+  if (!rows.length) return;
+  const { error } = await supabase
+    .from('pending_suggestions')
+    .upsert(rows, { onConflict: 'org_id,transaction_id' });
+  if (error) console.warn('savePendingSuggestions failed:', error.message);
+}
+
+/** Load all pending suggestions for this org */
+export async function getPendingSuggestions(orgId) {
+  const { data, error } = await supabase
+    .from('pending_suggestions')
+    .select('*, categories(id, label, colour, type)')
+    .eq('org_id', orgId);
+  if (error) throw error;
+  return data ?? [];
+}
+
+/** Dismiss (delete) a pending suggestion after user approves or rejects */
+export async function dismissPendingSuggestion(transactionId, orgId) {
+  await supabase
+    .from('pending_suggestions')
+    .delete()
+    .eq('transaction_id', transactionId)
+    .eq('org_id', orgId);
 }

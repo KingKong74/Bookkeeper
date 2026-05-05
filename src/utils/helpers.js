@@ -131,6 +131,7 @@ export function payeeColor(name, payeesList = []) {
  * Both from and to are inclusive.
  */
 export function filterByDateRange(transactions, from, to) {
+  if (!transactions) return [];
   return transactions.filter(t => t.date >= from && t.date <= to);
 }
 
@@ -171,6 +172,7 @@ export function buildAccountTotals(transactions, categoryMap) {
  * "Medium" if it appears anywhere else.
  */
 export function runAutoCatRules(transactions, rules) {
+  if (!transactions || !rules) return [];
   const suggestions = [];
 
   transactions.forEach(t => {
@@ -181,7 +183,7 @@ export function runAutoCatRules(transactions, rules) {
 
     for (const rule of rules) {
       // 1. Keyword match
-      if (!descLower.includes(rule.keyword.toLowerCase())) continue;
+      if (!rule.keyword || !descLower.includes(rule.keyword.toLowerCase())) continue;
 
       // 2. Amount conditions (all optional — if set they must pass)
       if (rule.amtExact !== undefined && rule.amtExact !== null && rule.amtExact !== '') {
@@ -446,7 +448,8 @@ export function buildBSFromJournals(journals, dateFrom, dateTo, catMap, accountM
  *     ruleOpportunities: [ { keyword, count, exampleDesc } ]  — suggest new rules
  *   }
  */
-export function analyseImportedTransactions(transactions, existingRules, catMap, payees, cats = []) {
+export function analyseImportedTransactions(transactions, existingRules, catMap, payees, cats = [], dbHints = []) {
+  if (!transactions) return { suggestions:[], newPayees:[], ruleOpportunities:[] };
   const suggestions       = [];
   const descFrequency     = {};   // normalised description → [txnIds]
   const matchedPayees     = {};   // payee name candidate → count
@@ -530,7 +533,7 @@ export function analyseImportedTransactions(transactions, existingRules, catMap,
       const amtExact   = uniqueAmts.length === 1 ? parseFloat(uniqueAmts[0]) : null;
 
       // Estimate category from merchant name + description
-      const catEst = estimateCategoryForMerchant(name, instances[0].desc?.toLowerCase(), cats);
+      const catEst = estimateCategoryForMerchant(name, instances[0].desc?.toLowerCase(), cats, dbHints);
 
       ruleOpportunities.push({
         keyword:       key,
@@ -734,24 +737,40 @@ const MERCHANT_CAT_HINTS = {
  *
  * Returns: { catId: string|null, confidence: 'high'|'medium'|'low' }
  */
-export function estimateCategoryForMerchant(merchantName, descriptionLower, cats) {
+export function estimateCategoryForMerchant(merchantName, descriptionLower, cats, dbHints = []) {
   if (!cats || cats.length === 0) return { catId: null, confidence: 'low' };
 
   const mLow  = (merchantName || '').toLowerCase();
   const dLow  = (descriptionLower || '').toLowerCase();
 
-  // Find matching hint
   let hint = null;
   let confidence = 'low';
 
-  // 1. Try merchant name against hint keys
-  for (const [key, val] of Object.entries(MERCHANT_CAT_HINTS)) {
-    if (mLow === key || mLow.startsWith(key) || key.startsWith(mLow)) {
-      hint = val; confidence = 'high'; break;
+  // 1. DB hints take priority over hardcoded map (org-customisable)
+  if (dbHints && dbHints.length > 0) {
+    for (const h of dbHints) {
+      const key = h.keyword.toLowerCase();
+      if (mLow === key || mLow.startsWith(key) || key.startsWith(mLow)) {
+        hint = { hint: h.hint, type: h.cat_type }; confidence = 'high'; break;
+      }
+    }
+    if (!hint) {
+      for (const h of dbHints) {
+        if (dLow.includes(h.keyword.toLowerCase())) {
+          hint = { hint: h.hint, type: h.cat_type }; confidence = 'medium'; break;
+        }
+      }
     }
   }
 
-  // 2. Try description against hint keys (broader match)
+  // 2. Fallback to hardcoded map if no DB hint matched
+  if (!hint) {
+    for (const [key, val] of Object.entries(MERCHANT_CAT_HINTS)) {
+      if (mLow === key || mLow.startsWith(key) || key.startsWith(mLow)) {
+        hint = val; confidence = 'high'; break;
+      }
+    }
+  }
   if (!hint) {
     for (const [key, val] of Object.entries(MERCHANT_CAT_HINTS)) {
       if (dLow.includes(key)) {

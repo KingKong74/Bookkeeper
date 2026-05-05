@@ -6,6 +6,10 @@
  */
 
 import React from 'react';
+// Apply dark mode before first render to avoid flash
+if (localStorage.getItem('pref_dark_mode') === 'true') {
+  document.documentElement.setAttribute('data-theme', 'dark');
+}
 import ReactDOM from 'react-dom/client';
 import { AppProvider } from './context/AppContext';
 import App from './App';

@@ -19,7 +19,7 @@ import {
   supabase, getMyOrgs, getTransactions, getCategories,
   getPayees, getRules, getJournals, getBudgets,
   getTaxProfile, getTaxReferenceData, upsertPayee,
-  getBankAccounts,
+  getBankAccounts, getMerchantHints, getOrgSettings,
 } from '../lib/supabase';
 import { currentFYStart } from '../utils/helpers';
 
@@ -76,6 +76,8 @@ export function AppProvider({ children }) {
   const [journals,     setJournals]     = useState([]);
   const [budgets,      setBudgets]      = useState([]);
   const [accounts,     setAccounts]     = useState([]);
+  const [merchantHints, setMerchantHints] = useState([]);
+  const [orgSettings,   setOrgSettings]   = useState({ merchantIntelEnabled: true });
 
   // ── Tax ───────────────────────────────────────────────────
   const [taxProfile, setTaxProfile] = useState(null);
@@ -144,7 +146,7 @@ export function AppProvider({ children }) {
       const activeOrg = orgs[0];
       setOrg(activeOrg);
 
-      const [cats, pays, rls, jnls, txns, budgRows, taxProf, taxRef, accts] = await Promise.all([
+      const [cats, pays, rls, jnls, txns, budgRows, taxProf, taxRef, accts, hints, settings] = await Promise.all([
         getCategories(activeOrg.id),
         getPayees(activeOrg.id),
         getRules(activeOrg.id),
@@ -154,6 +156,8 @@ export function AppProvider({ children }) {
         getTaxProfile(activeOrg.id, fyStart),
         getTaxReferenceData(fyStart).catch(() => null),
         getBankAccounts(activeOrg.id).catch(() => []),
+        getMerchantHints(activeOrg.id).catch(() => []),
+        getOrgSettings(activeOrg.id).catch(() => ({})),
       ]);
 
       setCategories(cats.map(normaliseCat));
@@ -165,6 +169,8 @@ export function AppProvider({ children }) {
       setTaxProfile(taxProf);
       setTaxRefData(taxRef);
       setAccounts(accts || []);
+      setMerchantHints(hints || []);
+      setOrgSettings(prev => ({ merchantIntelEnabled:true, ...prev, ...(settings||{}) }));
     } catch (e) {
       console.error('Failed to load data:', e);
       setError(e.message);
@@ -229,6 +235,9 @@ export function AppProvider({ children }) {
     PALETTE,
     ensurePayee,
     reloadAll: loadAllData,
+    // Intelligence
+    merchantHints, setMerchantHints,
+    orgSettings,   setOrgSettings,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

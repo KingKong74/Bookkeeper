@@ -5,7 +5,7 @@
  * All other posting functions require DB access (tested in integration).
  */
 import { describe, it, expect } from 'vitest';
-import { buildJournalLines } from '../utils/helpers.js';
+import { buildJournalLines, runAutoCatRules } from '../utils/helpers.js';
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 const bankAcct   = { id:'ba-1', name:'ANZ Flex Saver' };
@@ -565,4 +565,92 @@ describe('extractPayeeCandidate()', () => {
   it('falls back to merchant extraction',() => expect(extractPayeeCandidate('NETFLIX.COM ANNUAL', [])).toBe('Netflix'));
   it('returns empty for internal',       () => expect(extractPayeeCandidate('SALARY CREDIT EMPLOYER', [])).toBe(''));
   it('null input returns empty',         () => expect(extractPayeeCandidate(null, [])).toBe(''));
+});
+
+// ── pendingCatMap merchant intelligence layer ─────────────────────────────────
+describe('pendingCatMap — merchant intelligence layer', () => {
+  const cats = [
+    { id:'c-groc', l:'Groceries',    t:'expense', ac:'Living', col:'#BA7517' },
+    { id:'c-sub',  l:'Subscriptions',t:'expense', ac:'Living', col:'#7F77DD' },
+  ];
+  const rules = [
+    { id:'r1', keyword:'WOOLWORTHS', catId:'c-groc', payee:'Woolworths', amtExact:'', amtMin:'', amtMax:'', direction:'' },
+  ];
+
+  // Simulate what pendingCatMap does using already-imported functions
+  function buildPendingMap(txns, rules, cats) {
+    const unalloc = txns.filter(t => !t.cat);
+    const map = {};
+    runAutoCatRules(unalloc, rules).forEach(s => { map[s.txnId] = s; });
+    for (const t of unalloc) {
+      if (map[t.id]?.sugCat) continue;
+      const merchant = extractMerchantName(t.desc || '');
+      if (!merchant) continue;
+      const est = estimateCategoryForMerchant(merchant, (t.desc||'').toLowerCase(), cats);
+      if (!est.catId) continue;
+      map[t.id] = { txnId:t.id, sugCat:est.catId, sugPayee:merchant, confidence:'Medium', fromIntel:true };
+    }
+    return map;
+  }
+
+  const txns = [
+    { id:'t1', desc:'WOOLWORTHS METRO',  amt:-92,   cat:null },
+    { id:'t2', desc:'NETFLIX.COM ANNUAL',amt:-15.99,cat:null },
+    { id:'t3', desc:'SALARY CREDIT',     amt:5000,  cat:null },
+    { id:'t4', desc:'COLES EXPRESS',     amt:-45,   cat:'c-groc'},
+  ];
+
+  it('rule match shows in map',             () => expect(buildPendingMap(txns,rules,cats)['t1']?.sugCat).toBe('c-groc'));
+  it('intel match shows for Netflix',       () => expect(buildPendingMap(txns,rules,cats)['t2']?.sugCat).toBe('c-sub'));
+  it('internal txn not in map',             () => expect(buildPendingMap(txns,rules,cats)['t3']).toBeUndefined());
+  it('already-categorised txn not in map',  () => expect(buildPendingMap(txns,rules,cats)['t4']).toBeUndefined());
+  it('intel match has fromIntel flag',      () => expect(buildPendingMap(txns,rules,cats)['t2']?.fromIntel).toBe(true));
+});
+
+// ── Ghost rules / import behaviour tests ─────────────────────────────────────
+describe('Import: merchant intelligence should NOT auto-apply on import', () => {
+  // Simulate the toImport mapping logic from doImport
+  function buildToImport(selectedRows, autoCatMap) {
+    return selectedRows.map(t => {
+      const sug = autoCatMap[t._key];
+      // Only apply category if from explicit rule, NOT merchant intelligence
+      const applyCat = sug?.sugCat && !sug?.fromIntel ? sug.sugCat : (t.cat || null);
+      return { ...t, cat: applyCat };
+    });
+  }
+
+  const rows = [
+    { _key:'k1', desc:'WOOLWORTHS METRO',  amt:-92,   cat:null },
+    { _key:'k2', desc:'NETFLIX.COM',       amt:-15.99,cat:null },
+    { _key:'k3', desc:'PAYMENT TO RENT',   amt:-1800, cat:null },
+  ];
+
+  const autoCatMapRuleOnly = {
+    'k3': { sugCat:'c-rent', sugPayee:'', confidence:'High', fromIntel:false, rule:'RENT' },
+  };
+  const autoCatMapIntelOnly = {
+    'k1': { sugCat:'c-groc', sugPayee:'Woolworths', confidence:'High', fromIntel:true, reason:'Merchant: Woolworths' },
+    'k2': { sugCat:'c-sub',  sugPayee:'Netflix',    confidence:'High', fromIntel:true, reason:'Merchant: Netflix' },
+  };
+  const autoCatMapMixed = { ...autoCatMapRuleOnly, ...autoCatMapIntelOnly };
+
+  it('rule suggestion IS applied on import',         () => expect(buildToImport(rows, autoCatMapRuleOnly).find(t=>t._key==='k3')?.cat).toBe('c-rent'));
+  it('intel suggestion is NOT applied on import',    () => expect(buildToImport(rows, autoCatMapIntelOnly).find(t=>t._key==='k1')?.cat).toBeNull());
+  it('intel Netflix not applied on import',          () => expect(buildToImport(rows, autoCatMapIntelOnly).find(t=>t._key==='k2')?.cat).toBeNull());
+  it('mixed: rule applies, intel does not',          () => {
+    const result = buildToImport(rows, autoCatMapMixed);
+    expect(result.find(t=>t._key==='k3')?.cat).toBe('c-rent'); // rule — applied
+    expect(result.find(t=>t._key==='k1')?.cat).toBeNull();     // intel — not applied
+    expect(result.find(t=>t._key==='k2')?.cat).toBeNull();     // intel — not applied
+  });
+  it('no autoCatMap entry leaves cat null',          () => expect(buildToImport(rows, {}).find(t=>t._key==='k1')?.cat).toBeNull());
+  it('empty rules = no auto-applied categories',     () => {
+    const allIntel = {
+      'k1': { sugCat:'c-groc', fromIntel:true },
+      'k2': { sugCat:'c-sub',  fromIntel:true },
+      'k3': { sugCat:'c-rent', fromIntel:true },
+    };
+    const result = buildToImport(rows, allIntel);
+    expect(result.every(t => t.cat === null)).toBe(true);
+  });
 });

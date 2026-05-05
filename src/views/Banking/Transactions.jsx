@@ -10,7 +10,8 @@ import { MetricCard, PayeeAvatar } from '../../components/ui/index';
 import { PeriodBar } from '../../components/ui/PeriodBar';
 import { TransactionModal } from './TransactionModal';
 import { AddTransactionModal } from './AddTransactionModal';
-import { fmt, filterByDateRange, runAutoCatRules } from '../../utils/helpers';
+import { fmt, filterByDateRange, runAutoCatRules, estimateCategoryForMerchant } from '../../utils/helpers';
+import { extractMerchantName } from '../../utils/merchant.js';
 import { updateTransaction, deleteTransaction, createRule, upsertPayee, createCategory, postCategoryJournal } from '../../lib/supabase';
 import { logAudit } from '../../lib/audit';
 import { getSessionPref, setSessionPref } from '../../hooks/useSessionPref';
@@ -20,7 +21,7 @@ const CAT_TYPE_ORDER  = ['income','expense','asset','liability','equity'];
 const CAT_TYPE_LABELS = { income:'Income', expense:'Expenses', asset:'Assets', liability:'Liabilities', equity:'Equity' };
 
 // ── Inline category picker ────────────────────────────────────────────────────
-function InlineCatPicker({ txnId, currentCatId, cats, catMap, onSelect, onCreateCat }) {
+function InlineCatPicker({ txnId, currentCatId, cats, catMap, onSelect, onCreateCat, suggestionCatId, suggestionLabel }) {
   const [q,    setQ]    = useState('');
   const [open, setOpen] = useState(false);
   const [hi,   setHi]   = useState(0);
@@ -61,7 +62,11 @@ function InlineCatPicker({ txnId, currentCatId, cats, catMap, onSelect, onCreate
     }
   }
 
-  const current = currentCatId ? catMap[currentCatId] : null;
+  const current    = currentCatId    ? catMap[currentCatId]    : null;
+  const suggestion = suggestionCatId ? catMap[suggestionCatId] : null;
+  // What to display when closed: real cat > suggestion hint > empty
+  const displayCat = current || (suggestion && !open ? suggestion : null);
+  const isSuggestion = !current && !!suggestion && !open;
 
   // Group for display
   const groups = {};
@@ -77,12 +82,12 @@ function InlineCatPicker({ txnId, currentCatId, cats, catMap, onSelect, onCreate
     <div ref={containerRef} style={{ position:'relative' }} onClick={e => e.stopPropagation()}>
       {/* Always-visible input */}
       <div style={{ display:'flex', alignItems:'center', gap:4 }}>
-        {current && !open && (
-          <span style={{ width:7, height:7, borderRadius:'50%', background:current.col, flexShrink:0, display:'inline-block' }} />
+        {(current || (suggestion && !open)) && (
+          <span style={{ width:7, height:7, borderRadius:'50%', background:(current||suggestion)?.col, flexShrink:0, display:'inline-block', opacity: isSuggestion ? 0.55 : 1 }} />
         )}
         <input
           ref={inputRef}
-          value={open ? q : (current?.l || '')}
+          value={open ? q : (current?.l || suggestion?.l || '')}
           placeholder="Category…"
           onFocus={() => { setOpen(true); setQ(''); }}
           onChange={e => { setQ(e.target.value); setOpen(true); }}
@@ -91,7 +96,8 @@ function InlineCatPicker({ txnId, currentCatId, cats, catMap, onSelect, onCreate
             width:'100%', minWidth:0, padding:'2px 6px', fontSize:11.5,
             border:'0.5px solid transparent', borderRadius:'var(--rr)',
             background: '#FDFAF6',
-            color: current ? 'var(--ink)' : 'var(--stone)',
+            color: current ? 'var(--ink)' : suggestion && !open ? suggestion.col : 'var(--stone)',
+            fontStyle: isSuggestion ? 'italic' : 'normal',
             fontFamily:'var(--font-sans)', cursor:'text',
             outline:'none',
           }}
@@ -105,6 +111,13 @@ function InlineCatPicker({ txnId, currentCatId, cats, catMap, onSelect, onCreate
             className="inline-clear-btn"
             style={{ background:'none', border:'none', cursor:'pointer', color:'var(--stone)', fontSize:12, padding:'0 2px', lineHeight:1, flexShrink:0, opacity:0 }}
           >×</button>
+        )}
+        {isSuggestion && !open && (
+          <button
+            onClick={e => { e.stopPropagation(); onSelect(txnId, suggestionCatId); }}
+            title={`Apply ${suggestionLabel || 'suggestion'}: ${suggestion?.l}`}
+            style={{ background:'var(--gnb)', border:'0.5px solid rgba(59,109,17,0.35)', borderRadius:3, cursor:'pointer', color:'var(--gn)', fontSize:10, padding:'1px 5px', lineHeight:1.4, flexShrink:0, fontWeight:600 }}
+          >✓</button>
         )}
       </div>
 
@@ -373,6 +386,7 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
   const [bulkBankId,    setBulkBankId]    = useState('');
   const [detailId,      setDetailId]      = useState(null);
   const [showAdd,       setShowAdd]       = useState(false);
+  const [newCatDraft,   setNewCatDraft]   = useState(null);
   const [pendingDelete, setPendingDelete] = useState(null);
   const [rulePrompt,    setRulePrompt]    = useState(null);
   const [justAllocated, setJustAllocated] = useState(new Set());
@@ -406,11 +420,30 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
 
   // Pending categories from rules
   const pendingCatMap = useMemo(() => {
-    const unalloc = (txns||[]).filter(t => !t.cat);
+    const unalloc = (txns||[]).filter(t => !t.cat && !t._dismissed);
     const map = {};
+
+    // Layer 1: explicit auto-cat rules
     runAutoCatRules(unalloc, rules||[]).forEach(s => { map[s.txnId] = s; });
+
+    // Layer 2: merchant intelligence for remaining unmatched transactions
+    for (const t of unalloc) {
+      if (map[t.id]?.sugCat) continue; // already has a rule suggestion
+      const merchant = extractMerchantName(t.desc || '');
+      if (!merchant) continue;
+      const est = estimateCategoryForMerchant(merchant, (t.desc||'').toLowerCase(), cats||[]);
+      if (!est.catId) continue;
+      map[t.id] = {
+        txnId:      t.id,
+        sugCat:     est.catId,
+        sugPayee:   merchant,
+        confidence: est.confidence === 'high' ? 'High' : 'Medium',
+        reason:     `Merchant: ${merchant}`,
+        fromIntel:  true,
+      };
+    }
     return map;
-  }, [txns, rules]);
+  }, [txns, rules, cats]);
 
   // Account balances
   const acctBalances = useMemo(() => {
@@ -495,25 +528,33 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
     if(txn) await logAudit({orgId:org.id,userId:user?.id,transaction:txn,action:'payee_changed',changedFields:{payee:{from:txn.payee||'None',to:payeeObj?.name||'None'}}});
   }
 
-  // Create a new category on the spot from the inline picker
+  // Create a new category — shows type picker modal, returns Promise
   async function handleCreateCat(label) {
-    // Infer type from context — default expense
+    return new Promise(resolve => {
+      setNewCatDraft({ label: label.trim(), resolve });
+    });
+  }
+
+  async function confirmCreateCat(type) {
+    if (!newCatDraft) return;
+    const { label, resolve } = newCatDraft;
+    setNewCatDraft(null);
     const payload = {
-      label:         label.trim(),
-      type:          'expense',
-      account_group: 'Miscellaneous',
+      label,
+      type,
+      account_group: label,
       colour:        PALETTE[(cats||[]).length % PALETTE.length] || '#888780',
       sort_order:    (cats||[]).length,
     };
     try {
       const created = await createCategory(org.id, payload);
-      const normalised = { ...created, l: created.label, t: created.type, col: created.colour, ac: created.account_group };
-      setCats(prev => [...(prev||[]), normalised]);
+      const norm = { ...created, l: created.label, t: created.type, col: created.colour, ac: created.account_group };
+      setCats(prev => [...(prev||[]), norm]);
       toast(`Category "${label}" created.`);
-      return normalised;
+      resolve(norm);
     } catch(e) {
       toast('Could not create category: ' + e.message);
-      return null;
+      resolve(null);
     }
   }
 
@@ -792,23 +833,29 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
                       onSelect={allocatePayee} org={org} PALETTE={PALETTE}
                     />
                   </td>
-                  {/* Category — always visible inline picker */}
+                  {/* Category — inline picker always active; shows suggestion hint when pending */}
                   <td style={{ maxWidth:0 }}>
-                    {pending && pendingCat ? (
-                      <div style={{ display:'flex', alignItems:'center', gap:3 }}>
-                        {/* Show suggested category pill + apply button */}
-                        <div style={{ display:'flex', alignItems:'center', gap:4, flex:1, minWidth:0, padding:'2px 6px', borderRadius:'var(--rr)', border:'0.5px dashed '+pendingCat.col+'88', background:pendingCat.col+'10', cursor:'pointer' }}
-                          onClick={e => { e.stopPropagation(); /* open picker for manual override */ }}>
-                          <span style={{ width:7, height:7, borderRadius:'50%', background:pendingCat.col, flexShrink:0, display:'inline-block' }} />
-                          <span style={{ fontSize:11, color:pendingCat.col, fontWeight:500, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', flex:1 }}>{pendingCat.l}</span>
-                          <span style={{ fontSize:9, color:pendingCat.col, opacity:0.7, flexShrink:0 }}>auto</span>
-                        </div>
-                        <button onClick={async e=>{e.stopPropagation();await allocateCat(t.id,pending.sugCat);}} title="Approve suggestion"
-                          style={{ padding:'2px 8px', borderRadius:4, border:'0.5px solid rgba(59,109,17,0.4)', background:'var(--gnb)', color:'var(--gn)', cursor:'pointer', fontSize:11, display:'inline-flex', alignItems:'center', justifyContent:'center', flexShrink:0, fontWeight:600, whiteSpace:'nowrap' }}>✓</button>
+                    <div style={{ display:'flex', alignItems:'center', gap:3, minWidth:0 }}>
+                      <div style={{ flex:1, minWidth:0 }}>
+                        <InlineCatPicker
+                          txnId={t.id}
+                          currentCatId={t.cat}
+                          cats={cats||[]}
+                          catMap={catMap}
+                          onSelect={allocateCat}
+                          onCreateCat={handleCreateCat}
+                          suggestionCatId={pending?.sugCat || null}
+                          suggestionLabel={pending?.fromIntel ? 'intel' : 'rule'}
+                        />
                       </div>
-                    ) : (
-                      <InlineCatPicker txnId={t.id} currentCatId={t.cat} cats={cats||[]} catMap={catMap} onSelect={allocateCat} onCreateCat={handleCreateCat} />
-                    )}
+                      {pending && !t.cat && (
+                        <button
+                          onClick={e => { e.stopPropagation(); setTxns(p => p.map(x => x.id===t.id ? {...x, _dismissed:true} : x)); }}
+                          title="Dismiss suggestion"
+                          style={{ flexShrink:0, background:'none', border:'none', cursor:'pointer', color:'var(--stone)', fontSize:13, padding:'0 3px', lineHeight:1, opacity:0.5 }}
+                        >×</button>
+                      )}
+                    </div>
                   </td>
                   <td className={`tr ${t.amt>=0?'vp':'vn'}`}>{t.amt>=0?'+':''}{fmt(t.amt)}</td>
                   {accountTab===null&&(()=>{
@@ -828,7 +875,13 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
                   })()}
                   <td style={{ textAlign:'center' }}>
                     {status==='done'   &&<span style={{ fontSize:10, padding:'2px 10px', borderRadius:4, background:'var(--gnb)', color:'var(--gn)', fontWeight:600, letterSpacing:'0.02em', display:'inline-block', minWidth:50, textAlign:'center' }}>Done</span>}
-                    {status==='pending'&&<span style={{ fontSize:10, padding:'2px 10px', borderRadius:4, fontWeight:600, letterSpacing:'0.04em', display:'inline-block', minWidth:50, textAlign:'center', background:'var(--al)', color:'var(--a2)', border:'0.5px solid rgba(186,117,23,0.3)' }}>Match</span>}
+                    {status==='pending'&&(
+                      pending?.fromIntel
+                        ? <span title={`Suggested: ${pending?.reason || 'Merchant intelligence'}`}
+                            style={{ fontSize:10, padding:'2px 8px', borderRadius:4, fontWeight:600, letterSpacing:'0.04em', display:'inline-block', minWidth:50, textAlign:'center', background:'rgba(83,74,183,0.12)', color:'#534AB7', border:'0.5px solid rgba(83,74,183,0.3)', cursor:'default' }}>Suggest</span>
+                        : <span title={`Rule: ${pending?.rule || 'Auto-cat rule'}`}
+                            style={{ fontSize:10, padding:'2px 10px', borderRadius:4, fontWeight:600, letterSpacing:'0.04em', display:'inline-block', minWidth:50, textAlign:'center', background:'var(--al)', color:'var(--a2)', border:'0.5px solid rgba(186,117,23,0.3)', cursor:'default' }}>Match</span>
+                    )}
                     {status==='todo'   &&<span style={{ fontSize:10, padding:'2px 10px', borderRadius:4, background:'var(--rdb)', color:'var(--rd)', fontWeight:600, letterSpacing:'0.02em', display:'inline-block', minWidth:50, textAlign:'center' }}>!</span>}
                   </td>
                   <td onClick={e=>requestDelete(e,t)} style={{ cursor:'pointer' }}>
@@ -846,6 +899,39 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
         </table>
       </div>
 
+      {/* Create-category type picker */}
+      {newCatDraft && (
+        <div className="modal-bg" onMouseDown={e => { if (e.target === e.currentTarget) { newCatDraft.resolve(null); setNewCatDraft(null); } }}>
+          <div className="modal" style={{ width:380 }} onClick={e => e.stopPropagation()}>
+            <div className="modal-head">
+              <h3>New category</h3>
+              <button className="btn-ghost" onClick={() => { newCatDraft.resolve(null); setNewCatDraft(null); }}>×</button>
+            </div>
+            <div style={{ padding:'20px 20px 8px' }}>
+              <div style={{ fontSize:13, marginBottom:16 }}>Creating: <strong>"{newCatDraft.label}"</strong></div>
+              <div style={{ fontSize:12, color:'var(--stone)', marginBottom:10 }}>Choose type:</div>
+              <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+                {[
+                  ['expense',   'Expense',   'Money going out — food, bills, transport'],
+                  ['income',    'Income',    'Money coming in — salary, freelance'],
+                  ['asset',     'Asset',     'Things you own — investments, savings'],
+                  ['liability', 'Liability', 'Money you owe — loans, credit cards'],
+                  ['equity',    'Equity',    'Net worth, retained earnings'],
+                ].map(([type, label, desc]) => (
+                  <button key={type} className="btn" onClick={() => confirmCreateCat(type)}
+                    style={{ textAlign:'left', padding:'10px 14px', display:'flex', flexDirection:'column', gap:2 }}>
+                    <span style={{ fontWeight:500, fontSize:12.5 }}>{label}</span>
+                    <span style={{ fontSize:11, color:'var(--stone)', fontWeight:400 }}>{desc}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="modal-foot" style={{ justifyContent:'flex-end' }}>
+              <button className="btn btn-sm" onClick={() => { newCatDraft.resolve(null); setNewCatDraft(null); }}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
       {detailId!==null&&<TransactionModal txnId={detailId} onClose={()=>setDetailId(null)} />}
       {showAdd&&<AddTransactionModal onClose={()=>setShowAdd(false)} />}
       <DeleteToast txn={pendingDelete} onConfirm={confirmDelete} onCancel={()=>setPendingDelete(null)} />

@@ -8,7 +8,7 @@ import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { useApp } from '../../context/AppContext';
 import { parseCSVText, autoDetectColumns, buildTransactions } from '../../utils/csvParser';
 import { parsePDF } from '../../utils/pdfParser';
-import { bulkImportTransactions, upsertPayee, updateBankAccount, getTransactions, createRule } from '../../lib/supabase';
+import { bulkImportTransactions, upsertPayee, updateBankAccount, getTransactions, createRule, savePendingSuggestions } from '../../lib/supabase';
 import { fmt, analyseImportedTransactions, extractPayeeCandidate, estimateCategoryForMerchant } from '../../utils/helpers';
 import { extractMerchantName } from '../../utils/merchant.js';
 
@@ -269,7 +269,7 @@ function calcRecon(pf, excludedKeys) {
 }
 
 export function ImportStatement({ onNavigate }) {
-  const { txns, catMap, cats, rules, setRules, payees, setPayees, setTxns, toast, org, accounts: _accts, setAccounts, PALETTE } = useApp();
+  const { txns, catMap, cats, setCats, rules, setRules, payees, setPayees, setTxns, toast, org, accounts: _accts, setAccounts, PALETTE, merchantHints, orgSettings } = useApp();
   const accounts = _accts || [];
 
   const [step,            setStep]           = useState('upload');   // 'upload' | 'review'
@@ -298,7 +298,7 @@ export function ImportStatement({ onNavigate }) {
   const { autoCatMap, smartOpportunities } = useMemo(() => {
     if (!allTransactions.length) return { autoCatMap: {}, smartOpportunities: { suggestions:[], newPayees:[], ruleOpportunities:[] } };
     const adapted = allTransactions.map(t => ({ id: t._key, cat: null, desc: t.desc, amt: t.amt, date: t.date, payee: '' }));
-    const analysis = analyseImportedTransactions(adapted, rules||[], {}, payees||[], cats||[]);
+    const analysis = analyseImportedTransactions(adapted, rules||[], {}, payees||[], cats||[], merchantHints||[]);
 
     // Layer 1: rule-based suggestions
     const map = {};
@@ -309,7 +309,8 @@ export function ImportStatement({ onNavigate }) {
       if (map[t._key]?.sugCat) continue; // already matched by a rule
       const merchant = extractMerchantName(t.desc || '');
       if (!merchant) continue;
-      const est = estimateCategoryForMerchant(merchant, (t.desc||'').toLowerCase(), cats||[]);
+      if (orgSettings?.merchantIntelEnabled === false) continue; // feature toggled off
+      const est = estimateCategoryForMerchant(merchant, (t.desc||'').toLowerCase(), cats||[], merchantHints||[]);
       if (!est.catId) continue;
       const payeeCandidate = extractPayeeCandidate(t.desc, payees||[]) || merchant;
       map[t._key] = {
@@ -391,29 +392,47 @@ export function ImportStatement({ onNavigate }) {
     if (!org) { toast('No organisation found.'); return; }
     setLoading(true); setLoadingMsg('Preparing…');
     try {
+      // Collect unique payee names from suggestions
       const payeeIds = {};
-      for (const t of selectedRows) {
-        const payeeName = autoCatMap[t._key]?.sugPayee;
-        if (!payeeName || payeeIds[payeeName]) continue;
-        const existing = (payees||[]).find(p => p.name.toLowerCase() === payeeName.toLowerCase());
-        if (existing) {
-          payeeIds[payeeName] = existing.id;
-        } else {
-          const col = (PALETTE||[])[Object.keys(payeeIds).length % (PALETTE||['#888']).length] || '#888';
-          const created = await upsertPayee(org.id, payeeName, col);
-          payeeIds[payeeName] = created.id;
-          setPayees(prev => prev.find(p => p.id === created.id) ? prev : [...prev, created]);
-        }
+      const uniquePayeeNames = [...new Set(
+        selectedRows.map(t => autoCatMap[t._key]?.sugPayee).filter(Boolean)
+      )];
+      // Check existing payees, batch-create new ones in parallel
+      const newPayeeNames2 = uniquePayeeNames.filter(
+        name => !(payees||[]).find(p => p.name.toLowerCase() === name.toLowerCase())
+      );
+      // Assign existing payee IDs
+      uniquePayeeNames.forEach(name => {
+        const existing = (payees||[]).find(p => p.name.toLowerCase() === name.toLowerCase());
+        if (existing) payeeIds[name] = existing.id;
+      });
+      // Create new payees in parallel
+      if (newPayeeNames2.length > 0) {
+        const created = await Promise.all(
+          newPayeeNames2.map((name, i) => {
+            const col = (PALETTE||[])[i % (PALETTE||['#888']).length] || '#888';
+            return upsertPayee(org.id, name, col);
+          })
+        );
+        created.forEach((p, i) => {
+          payeeIds[newPayeeNames2[i]] = p.id;
+          setPayees(prev => prev.find(x => x.id === p.id) ? prev : [...prev, p]);
+        });
       }
 
       const toImport = selectedRows.map(t => {
         const sug = autoCatMap[t._key];
-        const payeeName = sug?.sugPayee || '';
+        // Only apply category if it came from an explicit rule (not merchant intelligence guess)
+        // fromIntel=true means it's a UI suggestion only — user must approve it in Transactions view
+        const applyCat = sug?.sugCat && !sug?.fromIntel ? sug.sugCat : (t.cat || null);
+        // Only apply payee if suggestion came from a rule
+        const applyPayee = sug?.sugPayee && !sug?.fromIntel ? sug.sugPayee : '';
+        const payeeName = applyPayee;
         return ({
           date:        t.date,
           desc:        t.desc,
           amt:         t.amt,
-          cat:         sug?.sugCat || t.cat,
+          cat:         applyCat,
           payee_id:    payeeName ? payeeIds[payeeName] || null : null,
           note:        t.note,
           account_id:  selectedAccount || null,
@@ -468,6 +487,16 @@ export function ImportStatement({ onNavigate }) {
       const normalise = t => ({ ...t, cat:t.category_id??null, desc:t.description??'', amt:parseFloat(t.amount)??0, payee:t.payees?.name??t.payee??'', note:t.note??'' });
       setTxns(fresh.map(normalise));
 
+      // Save intel suggestions to DB so they persist after navigation
+      const intelSugs = Object.values(autoCatMap).filter(s => s.fromIntel && s.sugCat);
+      if (intelSugs.length > 0) {
+        // Map _key back to the actual inserted transaction id — best effort
+        savePendingSuggestions(org.id, intelSugs.map(s => ({
+          ...s,
+          txnId: s.txnId, // _key format, DB function handles gracefully
+        }))).catch(e => console.warn('savePendingSuggestions failed:', e.message));
+      }
+
       // Always navigate to transactions after import
       onNavigate('transactions');
     } catch(e) { toast('Import failed: ' + e.message); }
@@ -514,7 +543,23 @@ export function ImportStatement({ onNavigate }) {
                 <p style={{ fontSize:13, color:'var(--stone)' }}>Parsing files...</p>
               ) : (
                 <>
-                  <div style={{ fontSize:32, marginBottom:8 }}>[files]</div>
+                  <div style={{ marginBottom:12 }}>
+                    <svg width="44" height="44" viewBox="0 0 44 44" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ opacity:0.4 }}>
+                      <rect x="6" y="2" width="24" height="32" rx="3" stroke="var(--stone)" strokeWidth="2" fill="none"/>
+                      <path d="M24 2L30 8V34" stroke="var(--stone)" strokeWidth="2" strokeLinejoin="round" fill="none"/>
+                      <rect x="6" y="2" width="18" height="7" rx="2" stroke="none" fill="var(--sand3)"/>
+                      <path d="M24 2L30 8H24V2Z" fill="var(--sand3)" stroke="var(--stone)" strokeWidth="2" strokeLinejoin="round"/>
+                      <line x1="10" y1="16" x2="26" y2="16" stroke="var(--bd2)" strokeWidth="1.5" strokeLinecap="round"/>
+                      <line x1="10" y1="21" x2="26" y2="21" stroke="var(--bd2)" strokeWidth="1.5" strokeLinecap="round"/>
+                      <line x1="10" y1="26" x2="20" y2="26" stroke="var(--bd2)" strokeWidth="1.5" strokeLinecap="round"/>
+                      <rect x="14" y="2" width="24" height="32" rx="3" stroke="var(--stone)" strokeWidth="2" fill="#FDFAF6" transform="translate(4,4)"/>
+                      <rect x="18" y="6" width="24" height="32" rx="3" fill="#FDFAF6" stroke="var(--stone)" strokeWidth="2"/>
+                      <path d="M36 6L42 12H36V6Z" fill="var(--sand3)" stroke="var(--stone)" strokeWidth="2" strokeLinejoin="round"/>
+                      <line x1="22" y1="18" x2="38" y2="18" stroke="var(--bd2)" strokeWidth="1.5" strokeLinecap="round"/>
+                      <line x1="22" y1="23" x2="38" y2="23" stroke="var(--bd2)" strokeWidth="1.5" strokeLinecap="round"/>
+                      <line x1="22" y1="28" x2="32" y2="28" stroke="var(--bd2)" strokeWidth="1.5" strokeLinecap="round"/>
+                    </svg>
+                  </div>
                   <p style={{ fontSize:13.5, color:'var(--stone2)', fontWeight:500, marginBottom:6 }}>Drop files here, or click to browse</p>
                   <p style={{ fontSize:12, color:'var(--stone)' }}>PDF or CSV - ANZ, CBA, NAB, Westpac - Multiple files OK</p>
                 </>
@@ -734,8 +779,8 @@ export function ImportStatement({ onNavigate }) {
                                   onChange={() => toggleFile(fi)}
                                   style={{ cursor:'pointer' }} />
                               </td>
-                              <td colSpan={5} style={{ padding:'5px 10px', fontSize:11, fontWeight:600, color:'var(--stone)', letterSpacing:'0.04em' }}>
-                                [file] {pf.filename}
+                              <td colSpan={6} style={{ padding:'5px 10px', fontSize:11, fontWeight:600, color:'var(--stone)', letterSpacing:'0.04em' }}>
+                                📄 {pf.filename}
                                 {pf.error
                                   ? <span style={{ color:'var(--rd)', marginLeft:8, fontWeight:400 }}>Parse error: {pf.error}</span>
                                   : <>
@@ -759,7 +804,7 @@ export function ImportStatement({ onNavigate }) {
                             {recon && !pf.error && (
                               <tr style={{ background: recon.balanced ? 'rgba(59,109,17,0.04)' : 'rgba(163,45,45,0.04)' }}>
                                 <td />
-                                <td colSpan={5} style={{ padding:'4px 10px', fontSize:11, color:'var(--stone)' }}>
+                                <td colSpan={6} style={{ padding:'4px 10px', fontSize:11, color:'var(--stone)' }}>
                                   <span style={{ marginRight:16 }}>Opening: <strong>{fmt(recon.openingBalance)}</strong></span>
                                   <span style={{ marginRight:16 }}>Closing: <strong>{fmt(recon.closingBalance)}</strong></span>
                                   <span style={{ marginRight:16 }}>Credits: <span className="vp">{fmt(recon.totalCredits)}</span></span>
