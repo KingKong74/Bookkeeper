@@ -114,7 +114,7 @@ export function Categories() {
 }
 
 export function AutoCatRules() {
-  const { rules, setRules, cats, payees, toast } = useApp();
+  const { rules, setRules, cats, org, payees, toast } = useApp();
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState({ keyword: '', catId: '', payee: '', amtExact: '', amtMin: '', amtMax: '', direction: '' });
   const [dragIdx, setDragIdx] = useState(null);
@@ -123,15 +123,60 @@ export function AutoCatRules() {
   function openNew()   { setForm({ keyword: '', catId: '', payee: '', amtExact: '', amtMin: '', amtMax: '', direction: '' }); setEditing('new'); }
   function openEdit(i) { setForm({ amtExact: '', amtMin: '', amtMax: '', direction: '', ...rules[i] }); setEditing(i); }
 
-  function save() {
+  async function save() {
     if (!form.keyword.trim()) { toast('Keyword is required.'); return; }
-    if (editing === 'new') {
-      setRules(prev => [...prev, { id: Date.now(), ...form }]);
-      toast('Rule saved.');
-    } else {
-      setRules(prev => prev.map((r, i) => i === editing ? { ...r, ...form } : r));
-      toast('Rule updated.');
+
+    // Base payload — always safe (columns exist since v1)
+    const basePayload = {
+      keyword:     form.keyword.trim().toLowerCase(),
+      category_id: form.catId || null,
+      payee_name:  (form.payee || '').trim(),
+    };
+    // Extended payload — requires migration 014 to be applied first
+    const extPayload = {
+      ...basePayload,
+      amt_exact:  form.amtExact ? parseFloat(form.amtExact) : null,
+      amt_min:    form.amtMin   ? parseFloat(form.amtMin)   : null,
+      amt_max:    form.amtMax   ? parseFloat(form.amtMax)   : null,
+      direction:  form.direction || null, // null | 'in' | 'out' — never ''
+    };
+
+    function norm(base, saved) {
+      return { ...base, ...saved,
+        catId:     saved.category_id||'',
+        payee:     saved.payee_name||'',
+        keyword:   saved.keyword,
+        amtExact:  saved.amt_exact  != null ? String(saved.amt_exact)  : '',
+        amtMin:    saved.amt_min    != null ? String(saved.amt_min)    : '',
+        amtMax:    saved.amt_max    != null ? String(saved.amt_max)    : '',
+        direction: saved.direction  || '',
+      };
     }
+
+    // Try with extended columns; if migration 014 not yet applied, fall back to base
+    async function callDB(fn) {
+      try { return await fn(extPayload); }
+      catch(err) {
+        const msg = String(err?.message||'');
+        if (msg.includes('column') || msg.includes('400') || msg.includes('42703')) {
+          return await fn(basePayload);
+        }
+        throw err;
+      }
+    }
+
+    try {
+      if (editing === 'new') {
+        const saved = await callDB(p => createRule(org.id, { ...p, sort_order: (rules||[]).length }));
+        setRules(prev => [...(prev||[]), norm({}, saved)]);
+        toast('Rule saved.');
+      } else {
+        const rule = rules[editing];
+        const saved = await callDB(p => updateRule(rule.id, p));
+        setRules(prev => prev.map((r, i) => i === editing ? norm(rule, saved) : r));
+        toast('Rule updated.');
+      }
+    } catch(e) { toast('Could not save rule: ' + e.message); return; }
     setEditing(null);
   }
 

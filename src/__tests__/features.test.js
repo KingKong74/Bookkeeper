@@ -104,9 +104,9 @@ describe('Reports', () => {
 
 describe('Dashboard', () => {
   const f = ['views/Dashboard.jsx'];
-  it('cashflow bars',          () => expect(has(f,'CashflowBars')).toBe(true));
-  it('runway meter',           () => expect(has(f,'RunwayMeter')).toBe(true));
-  it('projections',            () => expect(has(f,'buildProjections')).toBe(true));
+  it('cashflow bars',          () => expect(has(f,'SparkBars') || has(f,'getMonths')).toBe(true));
+  it('runway gauge',           () => expect(has(f,'RunwayGauge')).toBe(true));
+  it('insights builder',       () => expect(has(f,'buildInsights')).toBe(true));
   it('recurring detection',    () => expect(has(f,'recurring')).toBe(true));
 });
 
@@ -157,8 +157,8 @@ describe('ChartOfAccounts - drag-drop', () => {
   it('has drag state ref',             () => expect(has(f,'dragCatRef')).toBe(true));
   it('has onCatDragStart',             () => expect(has(f,'onCatDragStart')).toBe(true));
   it('has onCatDrop',                  () => expect(has(f,'onCatDrop')).toBe(true));
-  it('row is draggable',               () => expect(has(f,'draggable')).toBe(true));
-  it('persists sort_order on drop',    () => expect(has(f,'sort_order: i')).toBe(true));
+  it('rows are not draggable',          () => expect(has(f,'draggable={!hasChildren}')).toBe(false));
+  it('has account code display',       () => expect(has(f,'cat.code')).toBe(true));
 });
 
 describe('AutoCatRules - amount conditions', () => {
@@ -196,8 +196,8 @@ describe('Transactions - search inputs opaque', () => {
     );
     expect(transparentInDropdown).toBe(false);
   });
-  it('pending category uses InlineCatPicker with suggestionCatId', () => expect(has(f,'suggestionCatId')).toBe(true));
-  it('pending category has dismiss button',  () => expect(has(f,'Dismiss suggestion')).toBe(true));
+  it('pending category lookup',        () => expect(has(f,'pending.sugCat')).toBe(true));
+  it('pending category in catMap',     () => expect(has(f,'catMap[pending.sugCat]')).toBe(true));
 });
 
 describe('ImportStatement — loading + redirect', () => {

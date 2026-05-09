@@ -12,7 +12,7 @@ import { TransactionModal } from './TransactionModal';
 import { AddTransactionModal } from './AddTransactionModal';
 import { fmt, filterByDateRange, runAutoCatRules, estimateCategoryForMerchant } from '../../utils/helpers';
 import { extractMerchantName } from '../../utils/merchant.js';
-import { updateTransaction, deleteTransaction, createRule, upsertPayee, createCategory, postCategoryJournal } from '../../lib/supabase';
+import { updateTransaction, deleteTransaction, createRule, upsertPayee, createCategory, createCategoryWithCode, postCategoryJournal } from '../../lib/supabase';
 import { logAudit } from '../../lib/audit';
 import { getSessionPref, setSessionPref } from '../../hooks/useSessionPref';
 
@@ -28,9 +28,18 @@ function InlineCatPicker({ txnId, currentCatId, cats, catMap, onSelect, onCreate
   const inputRef        = useRef(null);
   const containerRef    = useRef(null);
 
+  // Selectable = active accounts that are NOT parents-with-active-children
+  const selectable = (cats||[]).filter(c => {
+    if (c.is_active === false) return false;
+    const hasSubs = cats.some(ch=>ch.parent_id===c.id&&ch.is_active!==false);
+    return !hasSubs;
+  });
   const flat = q.trim()
-    ? cats.filter(c => c.l.toLowerCase().includes(q.toLowerCase()))
-    : cats;
+    ? selectable.filter(c => {
+        const lq = q.toLowerCase();
+        return (c.l||'').toLowerCase().includes(lq) || (c.code||'').includes(lq);
+      })
+    : selectable;
 
   useEffect(() => setHi(0), [q]);
 
@@ -55,9 +64,15 @@ function InlineCatPicker({ txnId, currentCatId, cats, catMap, onSelect, onCreate
     if (e.key === 'ArrowUp')   { e.preventDefault(); setHi(i => Math.max(i-1, 0)); return; }
     if (e.key === 'Enter' || e.key === 'Tab') {
       e.preventDefault();
-      if (flat[hi]) pick(flat[hi].id);
-      else if (flat.length === 0 && q.trim().length > 1 && onCreateCat) {
-        onCreateCat(q.trim()).then(cat => { if (cat) pick(cat.id); });
+      if (flat[hi]) { pick(flat[hi].id); return; }
+      const trimQ = q.trim();
+      // Code pattern: "831" or "831/002" — create with pre-filled code
+      if (/^\d{1,3}(\/\d{1,3})?$/.test(trimQ) && onCreateCat) {
+        onCreateCat('__code__:' + trimQ).then(cat => { if (cat) pick(cat.id); });
+        return;
+      }
+      if (flat.length === 0 && trimQ.length > 1 && onCreateCat) {
+        onCreateCat(trimQ).then(cat => { if (cat) pick(cat.id); });
       }
     }
   }
@@ -68,13 +83,32 @@ function InlineCatPicker({ txnId, currentCatId, cats, catMap, onSelect, onCreate
   const displayCat = current || (suggestion && !open ? suggestion : null);
   const isSuggestion = !current && !!suggestion && !open;
 
-  // Group for display
+  // Group for display — with parent headers and numeric code sort
+  function buildSectionItems(items) {
+    const withParent = items.filter(c=>c.parent_id);
+    const standalone = items.filter(c=>!c.parent_id);
+    const byParent = {};
+    withParent.forEach(c=>{if(!byParent[c.parent_id])byParent[c.parent_id]=[];byParent[c.parent_id].push(c);});
+    const result = [];
+    Object.keys(byParent).forEach(pid => {
+      const parent = cats.find(x=>x.id===pid);
+      if (parent) result.push({c:parent, isHeader:true, indent:false});
+      byParent[pid].sort((a,b)=>(parseInt(a.code)||9999)-(parseInt(b.code)||9999))
+        .forEach(ch=>result.push({c:ch, isHeader:false, indent:true}));
+    });
+    standalone.sort((a,b)=>(parseInt(a.code)||9999)-(parseInt(b.code)||9999))
+      .forEach(c=>result.push({c, isHeader:false, indent:false}));
+    return result;
+  }
   const groups = {};
   CAT_TYPE_ORDER.forEach(t => { groups[t] = []; });
   flat.forEach(c => { if (groups[c.t]) groups[c.t].push(c); });
   const sections = q.trim()
-    ? [{ label:'', items: flat }]
-    : CAT_TYPE_ORDER.filter(t => groups[t].length > 0).map(t => ({ label: CAT_TYPE_LABELS[t], items: groups[t] }));
+    ? [{ label:'', items: flat.map(c=>({c, isHeader:false, indent:!!c.parent_id})) }]
+    : CAT_TYPE_ORDER.filter(t=>groups[t].length>0).map(t=>({
+        label: CAT_TYPE_LABELS[t],
+        items: buildSectionItems(groups[t]),
+      }));
 
   let globalIdx = 0;
 
@@ -88,7 +122,7 @@ function InlineCatPicker({ txnId, currentCatId, cats, catMap, onSelect, onCreate
         <input
           ref={inputRef}
           value={open ? q : (current?.l || suggestion?.l || '')}
-          placeholder="Category…"
+          placeholder="Account…"
           onFocus={() => { setOpen(true); setQ(''); }}
           onChange={e => { setQ(e.target.value); setOpen(true); }}
           onKeyDown={handleKey}
@@ -107,7 +141,7 @@ function InlineCatPicker({ txnId, currentCatId, cats, catMap, onSelect, onCreate
         {current && (
           <button
             onClick={e => { e.stopPropagation(); onSelect(txnId, null); }}
-            title="Remove category"
+            title="Remove account"
             className="inline-clear-btn"
             style={{ background:'none', border:'none', cursor:'pointer', color:'var(--stone)', fontSize:12, padding:'0 2px', lineHeight:1, flexShrink:0, opacity:0 }}
           >×</button>
@@ -139,34 +173,55 @@ function InlineCatPicker({ txnId, currentCatId, cats, catMap, onSelect, onCreate
           {current && (
             <div style={{ padding:'5px 10px', fontSize:11.5, color:'var(--stone)', borderBottom:'0.5px solid var(--bd)', cursor:'pointer' }}
               onMouseDown={() => { onSelect(txnId, null); setOpen(false); }}>
-              <span style={{ fontSize:11, marginRight:6 }}>✕</span>Remove category
+              <span style={{ fontSize:11, marginRight:6 }}>✕</span>Remove account
             </div>
           )}
           {sections.map(({ label, items }) => (
             <React.Fragment key={label}>
               {label && <div style={{ padding:'4px 10px 2px', fontSize:10, fontWeight:600, color:'var(--stone)', textTransform:'uppercase', letterSpacing:'0.05em', background:'var(--sand)', borderTop:'0.5px solid var(--bd)' }}>{label}</div>}
-              {items.map(c => {
+              {items.map(({c, isHeader, indent}) => {
+                if (isHeader) return (
+                  <div key={'h:'+c.id} style={{ padding:'4px 10px', fontSize:11, display:'flex', alignItems:'center', gap:6, background:'var(--sand)', color:'var(--stone)', borderTop:'0.5px solid var(--bd)', cursor:'default' }}>
+                    <span style={{ width:7, height:7, borderRadius:'50%', background:c.col, flexShrink:0 }} />
+                    {c.code && <span style={{ fontFamily:'monospace', fontSize:10, color:'var(--stone2)' }}>{c.code}</span>}
+                    <span style={{ fontWeight:500 }}>{c.l}</span>
+                  </div>
+                );
                 const idx = globalIdx++;
                 return (
                   <div key={c.id}
-                    style={{ padding:'6px 10px', fontSize:12, cursor:'pointer', display:'flex', alignItems:'center', gap:7, background: idx===hi ? 'var(--al)' : '', fontWeight: c.id===currentCatId?500:400 }}
+                    style={{ padding:'6px 10px 6px '+(indent?'22px':'10px'), fontSize:12, cursor:'pointer', display:'flex', alignItems:'center', gap:7, background:idx===hi?'var(--al)':'', fontWeight:c.id===currentCatId?500:400 }}
                     onMouseEnter={() => setHi(idx)}
                     onMouseDown={() => pick(c.id)}
                   >
+                    {indent && <span style={{ fontSize:9, color:'var(--stone2)' }}>└</span>}
                     <span style={{ width:7, height:7, borderRadius:'50%', background:c.col, flexShrink:0 }} />
+                    {c.code && <span style={{ fontFamily:'monospace', fontSize:10, color:'var(--stone2)', flexShrink:0 }}>
+                      {indent && c.code.includes('/') ? '/' + c.code.split('/')[1] : c.code}
+                    </span>}
                     <span style={{ flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{c.l}</span>
-
                   </div>
                 );
               })}
             </React.Fragment>
           ))}
-          {flat.length === 0 && q.trim().length > 1 && (
+          {q.trim().length > 0 && (
             <div
               style={{ padding:'8px 10px', fontSize:12, cursor:'pointer', color:'var(--a2)', fontWeight:500, display:'flex', alignItems:'center', gap:6 }}
-              onMouseDown={async () => { if (onCreateCat) { const cat = await onCreateCat(q.trim()); if (cat) { pick(cat.id); } } }}
+              onMouseDown={async () => {
+                if (!onCreateCat) return;
+                const trimQ = q.trim();
+                const isCode = /^\d{1,3}(\/\d{1,3})?$/.test(trimQ);
+                const signal = isCode ? '__code__:' + trimQ : trimQ;
+                const cat = await onCreateCat(signal);
+                if (cat) pick(cat.id);
+              }}
             >
-              <span style={{ fontSize:13 }}>+</span> Create category "{q.trim()}"
+              <span style={{ fontSize:13 }}>+</span>
+              {/^\d{1,3}(\/\d{1,3})?$/.test(q.trim())
+                ? <span>Create account with code <strong style={{ fontFamily:'monospace' }}>{q.trim()}</strong></span>
+                : <span>Create account &ldquo;{q.trim()}&rdquo;</span>
+              }
             </div>
           )}
           {flat.length === 0 && !q.trim() && <div style={{ padding:'10px', fontSize:12, color:'var(--stone)', textAlign:'center' }}>No matches</div>}
@@ -372,6 +427,14 @@ function MakeRulePrompt({ desc, catLabel, onAccept, onDismiss, onNeverShow }) {
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
+// ── Suppression store ─────────────────────────────────────────────────────────
+const SUPPRESS_THRESHOLD = 2;
+const SUPPRESS_KEY_PAYEE = 'ledger_suppressed_payee';
+const SUPPRESS_KEY_CAT   = 'ledger_suppressed_cat';
+function getSuppressed(k){try{return JSON.parse(localStorage.getItem(k)||'{}');}catch{return{};}}
+function recordSuppression(k,kw){const s=getSuppressed(k);s[kw]=(s[kw]||0)+1;try{localStorage.setItem(k,JSON.stringify(s));}catch{}return s[kw];}
+function isSuppressed(k,kw){return(getSuppressed(k)[kw]||0)>=SUPPRESS_THRESHOLD;}
+
 export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
   const { txns, setTxns, cats, setCats, catMap, rules, setRules, payees, setPayees,
           accounts, dateFrom, dateTo, toast, org, user, PALETTE } = useApp();
@@ -382,7 +445,61 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
   const [typeFilter,    setTypeFilter]    = useState('');
   const [payeeFilter,   setPayeeFilter]   = useState('');
   const [selected,      setSelected]      = useState(new Set());
+  const [sortCol,       setSortCol]       = useState('date');
+  const [sortDir,       setSortDir]       = useState('desc'); // 'asc' | 'desc'
+
+  function toggleSort(col) {
+    if (sortCol === col) setSortDir(d => d==='asc'?'desc':'asc');
+    else { setSortCol(col); setSortDir(col==='date'?'desc':'asc'); }
+  }
+
+  // Auto-assign payees: match payee names against transaction descriptions.
+  // Two strategies (in priority order):
+  //   1. Payee name appears verbatim in the description (case-insensitive)
+  //   2. Extracted merchant name matches a payee name (case-insensitive)
+  useEffect(() => {
+    if (!txns?.length || !payees?.length) return;
+    const unassigned = txns.filter(t => !t.payee_id);
+    if (!unassigned.length) return;
+    // Sort payees longest-first so "Woolworths Metro" matches before "Woolworths"
+    const sortedPayees = [...payees].sort((a,b)=>(b.name||'').length-(a.name||'').length);
+    const toAssign = [];
+    for (const t of unassigned) {
+      const desc = (t.desc || t.description || '').toLowerCase();
+      if (!desc) continue;
+      const _merchant = (extractMerchantName(t.desc||'')||'').toLowerCase();
+      if (_merchant && isSuppressed(SUPPRESS_KEY_PAYEE, _merchant)) continue;
+      // Strategy 1: payee name substring in description
+      let matched = sortedPayees.find(p => {
+        const name = (p.name||'').toLowerCase();
+        return name.length >= 3 && desc.includes(name);
+      });
+      // Strategy 2: extracted merchant matches payee
+      if (!matched) {
+        const merchant = _merchant;
+        if (merchant.length >= 3) {
+          matched = sortedPayees.find(p => {
+            const name = (p.name||'').toLowerCase();
+            return name === merchant || merchant.startsWith(name) || name.startsWith(merchant);
+          });
+        }
+      }
+      if (matched) toAssign.push({ txnId: t.id, payeeId: matched.id, payeeName: matched.name });
+    }
+    if (!toAssign.length) return;
+    Promise.all(toAssign.map(({ txnId, payeeId }) =>
+      updateTransaction(txnId, { payee_id: payeeId }).catch(() => {})
+    )).then(() => {
+      setTxns(p => (p||[]).map(t => {
+        const found = toAssign.find(a => a.txnId === t.id);
+        return found ? { ...t, payee: found.payeeName, payee_id: found.payeeId } : t;
+      }));
+    });
+  }, [txns?.length, payees?.length]); // eslint-disable-line
   const [bulkCatDD,     setBulkCatDD]     = useState(false);
+  const bulkBtnRef = React.useRef(null);
+  const [bulkPayeeId,   setBulkPayeeId]   = useState('');
+  const [bulkCatQ,      setBulkCatQ]      = useState('');
   const [bulkBankId,    setBulkBankId]    = useState('');
   const [detailId,      setDetailId]      = useState(null);
   const [showAdd,       setShowAdd]       = useState(false);
@@ -479,7 +596,18 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
   if (typeFilter==='in')  ft = ft.filter(t=>t.amt>0);
   if (typeFilter==='out') ft = ft.filter(t=>t.amt<0);
   if (payeeFilter)        ft = ft.filter(t=>t.payee===payeeFilter);
-  ft = [...ft].sort((a,b)=>b.date.localeCompare(a.date));
+  ft = [...ft].sort((a,b)=>{
+    let av, bv;
+    if (sortCol==='date')   { av=a.date||''; bv=b.date||''; }
+    else if (sortCol==='desc')  { av=(a.desc||a.description||'').toLowerCase(); bv=(b.desc||b.description||'').toLowerCase(); }
+    else if (sortCol==='payee') { av=(a.payee||'').toLowerCase(); bv=(b.payee||'').toLowerCase(); }
+    else if (sortCol==='amt')   { av=a.amt??0; bv=b.amt??0; }
+    else if (sortCol==='cat')   { av=(catMap[a.cat]?.l||'').toLowerCase(); bv=(catMap[b.cat]?.l||'').toLowerCase(); }
+    else                        { av=a.date||''; bv=b.date||''; }
+    if (av<bv) return sortDir==='asc'?-1:1;
+    if (av>bv) return sortDir==='asc'?1:-1;
+    return 0;
+  });
 
   if (typeof window!=='undefined') window.__ledgerFt = ft;
 
@@ -490,20 +618,44 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
   async function allocateCat(txnId, catId) {
     const txn=txns.find(t=>t.id===txnId);
     const prev=txn?.cat?catMap[txn.cat]?.l:null, next=catId?catMap[catId]?.l:null;
-    await updateTransaction(txnId,{category_id:catId??null});
+    const pending = pendingCatMap[txnId];
+    const sugPayeeName = (!txn?.payee && pending?.sugPayee) ? pending.sugPayee : null;
+
+    // ── Optimistic UI update first — instant feedback ───────────────────────
     setTxns(p=>(p||[]).map(t=>t.id===txnId?{...t,cat:catId??null,category_id:catId??null}:t));
-    if(txn) await logAudit({orgId:org.id,userId:user?.id,transaction:txn,action:catId?'category_changed':'unallocated',changedFields:{category:{from:prev??'Unallocated',to:next??'Unallocated'}}});
-    // Post double-entry journal
-    try {
-      const cat  = catId ? catMap[catId] : null;
-      const acct = txn?.account_id ? (accounts||[]).find(a=>a.id===txn.account_id) : null;
-      const entry = await postCategoryJournal(org.id, txn??{id:txnId,date:'',desc:'',amt:0}, cat, acct);
-      if (entry) setTxns(p=>(p||[]).map(t=>t.id===txnId?{...t,journal_entry_id:entry.id}:t));
-    } catch(e) { console.warn('Journal post failed:', e.message); }
+
+    // ── Background: DB writes (non-blocking after UI update) ────────────────
+    const updates = { category_id: catId ?? null };
+    let newPayeeObj = null;
+
+    // Resolve payee upsert first (needed for DB update)
+    if (sugPayeeName) {
+      try {
+        const col = PALETTE[(payees||[]).length % (PALETTE||['#888']).length];
+        newPayeeObj = await upsertPayee(org.id, sugPayeeName, col);
+        if (!payees?.find(x=>x.name?.toLowerCase()===sugPayeeName.toLowerCase())) {
+          setPayees(prev => [...(prev||[]), newPayeeObj]);
+        }
+        updates.payee_id = newPayeeObj.id;
+        setTxns(p=>(p||[]).map(t=>t.id===txnId?{...t,payee:newPayeeObj.name,payee_id:newPayeeObj.id}:t));
+      } catch(e) { console.warn('Payee assign failed:', e.message); }
+    }
+
+    // Fire remaining DB calls in parallel (non-blocking)
+    updateTransaction(txnId, updates).catch(e=>console.warn('updateTxn failed:',e.message));
+    if (!catId && txn) { const k=(extractMerchantName(txn.desc||txn.description||'')||'').toLowerCase(); if(k) recordSuppression(SUPPRESS_KEY_CAT,k); }
+    logAudit({orgId:org.id,userId:user?.id,transaction:txn,action:catId?'category_changed':'unallocated',changedFields:{category:{from:prev??'Unallocated',to:next??'Unallocated'}}}).catch(()=>{});
+    if (catId) {
+      const cat=catMap[catId], acct=txn?.account_id?(accounts||[]).find(a=>a.id===txn.account_id):null;
+      postCategoryJournal(org.id,txn??{id:txnId,date:'',desc:'',amt:0},cat,acct)
+        .then(entry=>{ if(entry) setTxns(p=>(p||[]).map(t=>t.id===txnId?{...t,journal_entry_id:entry.id}:t)); })
+        .catch(e=>console.warn('Journal post failed:',e.message));
+    }
     if(catId&&allocTab==='uncategorised'){
       setJustAllocated(p=>new Set([...p,txnId]));
       setTimeout(()=>setJustAllocated(p=>{const n=new Set(p);n.delete(txnId);return n;}),2500);
     }
+    if (!catId && txn) { const k=(extractMerchantName(txn.desc||txn.description||'')||'').toLowerCase(); if(k) recordSuppression(SUPPRESS_KEY_CAT,k); }
     if(catId&&txn&&!getSessionPref('suppress_rule_prompt')){
       const key=txn.desc.toLowerCase().slice(0,20), tr=recentAllocRef.current;
       if(!tr[key]) tr[key]={catId,count:0};
@@ -523,37 +675,76 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
 
   async function allocatePayee(txnId, payeeObj) {
     const txn=txns.find(t=>t.id===txnId);
-    await updateTransaction(txnId,{payee_id:payeeObj?.id??null});
+    if (!payeeObj && txn) { const k=(extractMerchantName(txn.desc||txn.description||'')||'').toLowerCase(); if(k) recordSuppression(SUPPRESS_KEY_PAYEE,k); }
+    // Optimistic update first
     setTxns(p=>(p||[]).map(t=>t.id===txnId?{...t,payee:payeeObj?.name??'',payee_id:payeeObj?.id??null}:t));
-    if(txn) await logAudit({orgId:org.id,userId:user?.id,transaction:txn,action:'payee_changed',changedFields:{payee:{from:txn.payee||'None',to:payeeObj?.name||'None'}}});
+    // Fire DB in background
+    updateTransaction(txnId,{payee_id:payeeObj?.id??null}).catch(()=>{});
+    if(txn) logAudit({orgId:org.id,userId:user?.id,transaction:txn,action:'payee_changed',changedFields:{payee:{from:txn.payee||'None',to:payeeObj?.name||'None'}}}).catch(()=>{});
   }
 
   // Create a new category — shows type picker modal, returns Promise
   async function handleCreateCat(label) {
-    return new Promise(resolve => {
-      setNewCatDraft({ label: label.trim(), resolve });
-    });
+    if (label.startsWith('__code__:')) {
+      const code = label.replace('__code__:', '');
+      // Sub-code pattern: "831/002" → find parent account with code "831"
+      if (code.includes('/')) {
+        const [parentCode, suffix] = code.split('/');
+        const parentAcc = (cats||[]).find(c => c.code === parentCode && c.is_active !== false);
+        return new Promise(resolve => setNewCatDraft({
+          label: '', code, parentAcc, suffix, isSub: true, resolve
+        }));
+      }
+      return new Promise(resolve => setNewCatDraft({ label:'', code, resolve }));
+    }
+    return new Promise(resolve => setNewCatDraft({ label: label.trim(), resolve }));
+  }
+
+  function suggestAccountCode(type, label) {
+    const TYPE_RANGES = { asset:[100,399], liability:[400,599], equity:[600,699], income:[700,799], expense:[800,998] };
+    const [lo, hi] = TYPE_RANGES[type] || [800,998];
+    const used = new Set((cats||[]).filter(c=>c.code&&!c.code.includes('/')).map(c=>parseInt(c.code)).filter(n=>!isNaN(n)));
+    if (!label?.trim()) {
+      for (let n=lo; n<=hi; n++) { if (!used.has(n)) return String(n); }
+      return null;
+    }
+    const peers = (cats||[]).filter(c=>c.t===type&&c.is_active!==false&&c.code&&!c.code.includes('/')).sort((a,b)=>(a.l||'').localeCompare(b.l||''));
+    const insertIdx = peers.findIndex(p=>(p.l||'').toLowerCase()>label.toLowerCase());
+    const insertPos = insertIdx===-1 ? peers.length : insertIdx;
+    const rangeSize = hi-lo+1;
+    const idealNum = lo+Math.round((insertPos/(peers.length+1))*rangeSize);
+    for (let delta=0; delta<=rangeSize; delta++) {
+      if (!used.has(idealNum+delta) && idealNum+delta<=hi) return String(idealNum+delta);
+      if (!used.has(idealNum-delta) && idealNum-delta>=lo) return String(idealNum-delta);
+    }
+    return null;
   }
 
   async function confirmCreateCat(type) {
     if (!newCatDraft) return;
-    const { label, resolve } = newCatDraft;
+    const { label, code: draftCode, parentAcc, isSub, resolve } = newCatDraft;
     setNewCatDraft(null);
+    const effectiveType = isSub && parentAcc ? parentAcc.t : type;
+    const code = draftCode || suggestAccountCode(effectiveType, label);
     const payload = {
       label,
-      type,
+      type: effectiveType,
       account_group: label,
-      colour:        PALETTE[(cats||[]).length % PALETTE.length] || '#888780',
-      sort_order:    (cats||[]).length,
+      colour: parentAcc?.col || PALETTE[(cats||[]).length % PALETTE.length] || '#888780',
+      sort_order: parseInt(code) || (cats||[]).length,
+      code,
+      parent_id: parentAcc?.id || null,
     };
     try {
-      const created = await createCategory(org.id, payload);
-      const norm = { ...created, l: created.label, t: created.type, col: created.colour, ac: created.account_group };
+      const created = await createCategoryWithCode(org.id, payload);
+      const norm = { ...created, l:created.label, t:created.type, col:created.colour,
+        ac:created.account_group, code:created.code||null, is_active:true,
+        parent_id: created.parent_id||null };
       setCats(prev => [...(prev||[]), norm]);
-      toast(`Category "${label}" created.`);
+      toast(`Account "${label}" created${code ? ` (${code})` : ''}.`);
       resolve(norm);
     } catch(e) {
-      toast('Could not create category: ' + e.message);
+      toast('Could not create account: ' + e.message);
       resolve(null);
     }
   }
@@ -574,19 +765,34 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
   }
 
   async function bulkAllocate(catId) {
-    if(!catId||selected.size===0) return;
-    const ids=[...selected];
-    await Promise.all(ids.map(id=>updateTransaction(id,{category_id:catId})));
-    setTxns(p=>(p||[]).map(t=>selected.has(t.id)?{...t,cat:catId,category_id:catId}:t));
-    setSelected(new Set()); setBulkCatDD(false);
-    toast(`${ids.length} transactions → ${catMap[catId]?.l}.`);
-    // Post journals in background (non-blocking)
-    const cat  = catMap[catId];
-    const selectedTxns = (txns||[]).filter(t=>ids.includes(t.id));
-    Promise.all(selectedTxns.map(txn => {
-      const acct = txn.account_id ? (accounts||[]).find(a=>a.id===txn.account_id) : null;
-      return postCategoryJournal(org.id, txn, cat, acct).catch(e=>console.warn('Bulk journal failed:',e.message));
-    }));
+    if (selected.size === 0) return;
+    const ids = [...selected];
+    const isUnassign = !catId;
+    const updates = { category_id: catId || null };
+    // Assign payee from dropdown if one is selected
+    let payeeObj = null;
+    if (!isUnassign && bulkPayeeId) {
+      payeeObj = (payees||[]).find(p => p.id === bulkPayeeId) || null;
+      if (payeeObj) updates.payee_id = payeeObj.id;
+    }
+    await Promise.all(ids.map(id => updateTransaction(id, updates)));
+    setTxns(p => (p||[]).map(t => selected.has(t.id)
+      ? { ...t,
+          cat:      catId ?? null, category_id: catId ?? null,
+          payee:    isUnassign ? '' : (payeeObj?.name ?? t.payee),
+          payee_id: isUnassign ? null : (payeeObj?.id ?? t.payee_id) }
+      : t));
+    setSelected(new Set()); setBulkCatDD(false); setBulkPayeeId(''); setBulkCatQ('');
+    const label = isUnassign ? 'Unassigned' : catMap[catId]?.l;
+    toast(`${ids.length} transaction${ids.length>1?'s':''} → ${label}.`);
+    if (!isUnassign) {
+      const cat = catMap[catId];
+      const selectedTxns = (txns||[]).filter(t => ids.includes(t.id));
+      Promise.all(selectedTxns.map(txn => {
+        const acct = txn.account_id ? (accounts||[]).find(a=>a.id===txn.account_id) : null;
+        return postCategoryJournal(org.id, txn, cat, acct).catch(e=>console.warn('Bulk journal failed:',e.message));
+      }));
+    }
   }
 
   function requestDelete(e,txn){e.stopPropagation();setPendingDelete(txn);}
@@ -711,7 +917,7 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
             <div style={{ marginLeft:'auto', display:'flex', alignItems:'center', gap:8 }}>
               <span style={{ fontSize:12, color:'var(--stone)' }}>{selected.size} selected</span>
               <div style={{ position:'relative' }}>
-                <button className="btn btn-a btn-sm" onClick={()=>setBulkCatDD(v=>!v)}>Categorise {selected.size} ▾</button>
+                <button ref={bulkBtnRef} className="btn btn-a btn-sm" onClick={()=>setBulkCatDD(v=>!v)}>Categorise {selected.size} ▾</button>
                 {/* Bulk bank assign — especially useful on unlinked tab */}
                 {accountTab==='unlinked' && (
                   <div style={{ display:'flex', alignItems:'center', gap:6 }}>
@@ -725,23 +931,66 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
                     </button>
                   </div>
                 )}
-                {bulkCatDD&&(
-                  <div style={{ position:'absolute', top:'calc(100% + 4px)', right:0, background:'#FDFAF6', border:'0.5px solid var(--bd2)', borderRadius:'var(--rl)', padding:0, minWidth:200, maxHeight:300, overflowY:'auto', zIndex:600, boxShadow:'0 6px 20px rgba(42,36,32,0.14)' }} onMouseLeave={()=>{}}>
-                    {CAT_TYPE_ORDER.filter(t=>catsByType[t]?.length>0).map(type=>(
-                      <React.Fragment key={type}>
-                        <div style={{ padding:'4px 10px 2px', fontSize:10, fontWeight:600, color:'var(--stone)', textTransform:'uppercase', letterSpacing:'0.05em', background:'var(--sand)', borderTop:'0.5px solid var(--bd)' }}>{CAT_TYPE_LABELS[type]}</div>
-                        {catsByType[type].map(c=>(
-                          <div key={c.id} style={{ padding:'6px 10px', fontSize:12, cursor:'pointer', display:'flex', alignItems:'center', gap:7 }}
-                            onMouseEnter={e=>e.currentTarget.style.background='var(--sand)'}
-                            onMouseLeave={e=>e.currentTarget.style.background=''}
-                            onClick={()=>bulkAllocate(c.id)}>
-                            <span style={{ width:7, height:7, borderRadius:'50%', background:c.col }} />{c.l}
-                          </div>
+                {bulkCatDD&&(()=>{
+                  const br=bulkBtnRef.current?.getBoundingClientRect();
+                  return <div style={{ position:'fixed', top:(br?.bottom??0)+4, right:window.innerWidth-(br?.right??0), background:'#FDFAF6', border:'0.5px solid var(--bd2)', borderRadius:'var(--rr)', padding:0, minWidth:280, maxHeight:360, overflowY:'auto', zIndex:9999, boxShadow:'0 8px 24px rgba(42,36,32,0.18)' }}>
+                    {/* Payee + category search */}
+                    <div style={{ padding:'8px 10px', borderBottom:'0.5px solid var(--bd)', background:'#FDFAF6', position:'sticky', top:0, zIndex:1 }}>
+                      <div style={{ fontSize:10, color:'var(--stone)', marginBottom:4 }}>Assign payee (optional)</div>
+                      <select value={bulkPayeeId} onChange={e=>setBulkPayeeId(e.target.value)}
+                        style={{ width:'100%', fontSize:12, padding:'4px 6px', border:'0.5px solid var(--bd2)', borderRadius:'var(--rr)', background:'#fff', marginBottom:6 }}>
+                        <option value="">— no payee —</option>
+                        {(payees||[]).sort((a,b)=>(a.name||'').localeCompare(b.name||'')).map(p=>(
+                          <option key={p.id} value={p.id}>{p.name}</option>
                         ))}
+                      </select>
+                      <input placeholder="Search accounts…" value={bulkCatQ||''} onChange={e=>setBulkCatQ(e.target.value)}
+                        style={{ width:'100%', fontSize:12, padding:'4px 6px', border:'0.5px solid var(--bd2)', borderRadius:'var(--rr)', background:'#fff', boxSizing:'border-box' }} />
+                    </div>
+                    {/* Unassign */}
+                    <div style={{ padding:'7px 10px', fontSize:12, cursor:'pointer', color:'var(--rd)', display:'flex', alignItems:'center', gap:7, borderBottom:'0.5px solid var(--bd)' }}
+                      onMouseEnter={e=>e.currentTarget.style.background='rgba(163,45,45,0.06)'}
+                      onMouseLeave={e=>e.currentTarget.style.background=''}
+                      onClick={()=>bulkAllocate(null)}>
+                      ✕ Unassign category
+                    </div>
+                    {/* Category list with search filter */}
+                    {CAT_TYPE_ORDER.filter(t=>catsByType[t]?.some(cat=>{
+                      if (!bulkCatQ) return true;
+                      const q=bulkCatQ.toLowerCase();
+                      return (cat.l||'').toLowerCase().includes(q)||(cat.code||'').includes(q);
+                    })).map(type=>(
+                      <React.Fragment key={type}>
+                        <div style={{ padding:'4px 10px 2px', fontSize:10, fontWeight:600, color:'var(--stone)', textTransform:'uppercase', letterSpacing:'0.05em', background:'#f5f0eb', borderTop:'0.5px solid var(--bd)' }}>{CAT_TYPE_LABELS[type]}</div>
+                        {catsByType[type].filter(cat=>{
+                          if (!bulkCatQ) return true;
+                          const q=bulkCatQ.toLowerCase();
+                          return (cat.l||'').toLowerCase().includes(q)||(cat.code||'').includes(q);
+                        }).map(cat => {
+                          const hasSubs = (cats||[]).some(ch=>ch.parent_id===cat.id&&ch.is_active!==false);
+                          if (hasSubs) return (
+                            <div key={cat.id} style={{ padding:'4px 10px', fontSize:11.5, background:'var(--sand)', color:'var(--stone)', display:'flex', alignItems:'center', gap:6, borderTop:'0.5px solid var(--bd)' }}>
+                              <span style={{ width:7,height:7,borderRadius:'50%',background:cat.col,flexShrink:0 }}/>
+                              {cat.code&&<span style={{fontFamily:'monospace',fontSize:10}}>{cat.code}</span>}
+                              <span style={{fontWeight:500}}>{cat.l}</span>
+                            </div>
+                          );
+                          return (
+                            <div key={cat.id} style={{ padding:'6px 10px', fontSize:12, cursor:'pointer', display:'flex', alignItems:'center', gap:7 }}
+                              onMouseEnter={e=>e.currentTarget.style.background='var(--al)'}
+                              onMouseLeave={e=>e.currentTarget.style.background='#FDFAF6'}
+                              onClick={()=>bulkAllocate(cat.id)}>
+                              <span style={{ width:7,height:7,borderRadius:'50%',background:cat.col,flexShrink:0 }}/>
+                              {cat.code&&<span style={{fontFamily:'monospace',fontSize:10,color:'var(--stone2)',flexShrink:0}}>{cat.code.includes('/')?'/'+cat.code.split('/')[1]:cat.code}</span>}
+                              <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{cat.l}</span>
+                            </div>
+                          );
+                        })}
                       </React.Fragment>
                     ))}
-                  </div>
-                )}
+                  </div>;
+                })()
+                }
               </div>
               <button className="btn btn-sm" onClick={clearSel}>Clear</button>
             </div>
@@ -784,18 +1033,22 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
           </colgroup>
           <thead>
             <tr>
-              <th style={{ width:36, textAlign:'center' }}>
+              <th style={{ width:36, padding:'0 0 0 10px', verticalAlign:'middle', textAlign:'left' }}>
                 <input type="checkbox"
                   checked={ft.length>0 && ft.every(t=>selected.has(t.id))}
                   onChange={e => e.target.checked ? selectAll() : setSelected(new Set())}
-                  style={{ cursor:'pointer' }} />
+                  style={{ cursor:'pointer', display:'block' }} />
               </th>
-              <th>Date</th>
-              <th>Description</th>
-              <th>Payee</th>
-              <th>Category</th>
-              <th className="tr">Amount</th>
-              {accountTab===null&&<th>Account</th>}
+              {[['date','Date'],['desc','Description'],['payee','Payee'],['cat','Account'],['amt','Amount']].map(([col,label])=>(
+                <th key={col} onClick={()=>toggleSort(col)} className={col==='amt'?'tr':undefined}
+                  style={{ cursor:'pointer', userSelect:'none', whiteSpace:'nowrap' }}>
+                  {label}
+                  <span style={{ marginLeft:4, fontSize:9, opacity:sortCol===col?0.9:0.3 }}>
+                    {sortCol===col ? (sortDir==='asc'?'▲':'▼') : '⇅'}
+                  </span>
+                </th>
+              ))}
+              {accountTab===null&&<th>Bank</th>}
               <th style={{ textAlign:'center' }}>Status</th>
               <th />
             </tr>
@@ -811,7 +1064,7 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
                 <tr key={t.id}
                   style={{ cursor:'default',
                     background: isSelected ? 'rgba(186,117,23,0.15)' : t.cat ? '#FAF3E4' : '#FDFAF6',
-                    opacity: justAllocated.has(t.id) ? 0.3 : t.cat ? 0.68 : 1,
+                    opacity: justAllocated.has(t.id) ? 0.3 : 1,
                     transition: justAllocated.has(t.id) ? 'opacity 1s ease' : 'opacity 0.12s',
                   }}>
                   <td onClick={e=>toggleSelect(e,t.id)} style={{ cursor:'pointer' }}>
@@ -844,7 +1097,12 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
                           catMap={catMap}
                           onSelect={allocateCat}
                           onCreateCat={handleCreateCat}
-                          suggestionCatId={pending?.sugCat || null}
+                          suggestionCatId={(() => {
+                            const sid = pending?.sugCat || null;
+                            if (!sid) return null;
+                            const hasSubs = (cats||[]).some(ch=>ch.parent_id===sid&&ch.is_active!==false);
+                            return hasSubs ? null : sid;
+                          })()}
                           suggestionLabel={pending?.fromIntel ? 'intel' : 'rule'}
                         />
                       </div>
@@ -884,8 +1142,11 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
                     )}
                     {status==='todo'   &&<span style={{ fontSize:10, padding:'2px 10px', borderRadius:4, background:'var(--rdb)', color:'var(--rd)', fontWeight:600, letterSpacing:'0.02em', display:'inline-block', minWidth:50, textAlign:'center' }}>!</span>}
                   </td>
-                  <td onClick={e=>requestDelete(e,t)} style={{ cursor:'pointer' }}>
-                    <button className="btn-ghost" style={{ padding:'2px 5px', fontSize:13, color:'var(--stone)' }}>×</button>
+                  <td style={{ whiteSpace:'nowrap', textAlign:'right', padding:'0 6px 0 0' }}>
+                    <button className="btn-ghost" title="Open details" onClick={e=>{e.stopPropagation();setDetailId(t.id);}}
+                      style={{ padding:'2px 5px', fontSize:12, color:'var(--stone)', opacity:0.6 }}>⤢</button>
+                    <button className="btn-ghost" title="Delete" onClick={e=>requestDelete(e,t)}
+                      style={{ padding:'2px 5px', fontSize:13, color:'var(--stone)' }}>×</button>
                   </td>
                 </tr>
               );
@@ -904,27 +1165,71 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
         <div className="modal-bg" onMouseDown={e => { if (e.target === e.currentTarget) { newCatDraft.resolve(null); setNewCatDraft(null); } }}>
           <div className="modal" style={{ width:380 }} onClick={e => e.stopPropagation()}>
             <div className="modal-head">
-              <h3>New category</h3>
+              <h3>
+                {newCatDraft.isSub
+                  ? `New sub-account /${newCatDraft.suffix} under "${newCatDraft.parentAcc?.l||newCatDraft.code}"`
+                  : newCatDraft.code ? `New account — code ${newCatDraft.code}` : 'New account'}
+              </h3>
               <button className="btn-ghost" onClick={() => { newCatDraft.resolve(null); setNewCatDraft(null); }}>×</button>
             </div>
-            <div style={{ padding:'20px 20px 8px' }}>
-              <div style={{ fontSize:13, marginBottom:16 }}>Creating: <strong>"{newCatDraft.label}"</strong></div>
-              <div style={{ fontSize:12, color:'var(--stone)', marginBottom:10 }}>Choose type:</div>
-              <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
-                {[
-                  ['expense',   'Expense',   'Money going out — food, bills, transport'],
-                  ['income',    'Income',    'Money coming in — salary, freelance'],
-                  ['asset',     'Asset',     'Things you own — investments, savings'],
-                  ['liability', 'Liability', 'Money you owe — loans, credit cards'],
-                  ['equity',    'Equity',    'Net worth, retained earnings'],
-                ].map(([type, label, desc]) => (
-                  <button key={type} className="btn" onClick={() => confirmCreateCat(type)}
-                    style={{ textAlign:'left', padding:'10px 14px', display:'flex', flexDirection:'column', gap:2 }}>
-                    <span style={{ fontWeight:500, fontSize:12.5 }}>{label}</span>
-                    <span style={{ fontSize:11, color:'var(--stone)', fontWeight:400 }}>{desc}</span>
-                  </button>
-                ))}
+            <div className="modal-body">
+              {/* Name input — always required */}
+              <div className="field">
+                <label>Account name <span style={{ color:'var(--rd)' }}>*</span></label>
+                <input autoFocus type="text"
+                  defaultValue={newCatDraft.label||''}
+                  onChange={e => setNewCatDraft(p => ({ ...p, label: e.target.value }))}
+                  placeholder={newCatDraft.isSub ? `e.g. ${newCatDraft.parentAcc?.l||'Sub-account'} — Division` : 'e.g. Gym & Fitness'}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' && newCatDraft.label?.trim()) {
+                      // For sub-codes, type is inherited from parent — skip type picker
+                      if (newCatDraft.isSub && newCatDraft.parentAcc) confirmCreateCat(newCatDraft.parentAcc.t);
+                      else confirmCreateCat('expense');
+                    }
+                  }}
+                />
               </div>
+              {newCatDraft.isSub && newCatDraft.parentAcc && (
+                <div style={{ padding:'8px 12px', background:'var(--gnb)', borderRadius:'var(--rr)', fontSize:12, color:'var(--gn)', marginBottom:14 }}>
+                  Sub-account of <strong>{newCatDraft.parentAcc.l}</strong> · type: <strong>{newCatDraft.parentAcc.t}</strong> · code: <strong>{newCatDraft.code}</strong>
+                </div>
+              )}
+              {newCatDraft.isSub ? (
+                /* Sub-account: type is inherited, just show a create button */
+                <button className="btn btn-a" style={{ width:'100%' }}
+                  disabled={!newCatDraft.label?.trim()}
+                  onClick={() => newCatDraft.label?.trim() && confirmCreateCat(newCatDraft.parentAcc?.t||'expense')}>
+                  Create sub-account
+                </button>
+              ) : (
+                <>
+                  <div style={{ fontSize:12, color:'var(--stone)', marginBottom:10 }}>Choose account type:</div>
+                  <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+                    {[
+                      ['expense',   'Expense',   'Money going out — food, bills, transport'],
+                      ['income',    'Income',    'Money coming in — salary, freelance'],
+                      ['asset',     'Asset',     'Things you own — investments, savings'],
+                      ['liability', 'Liability', 'Money you owe — loans, credit cards'],
+                      ['equity',    'Equity',    'Net worth, retained earnings'],
+                    ].map(([type, label, desc]) => {
+                      const sugCode = newCatDraft.code || suggestAccountCode(type, newCatDraft?.label);
+                      return (
+                        <button key={type} className="btn"
+                          disabled={!newCatDraft.label?.trim()}
+                          onClick={() => newCatDraft.label?.trim() && confirmCreateCat(type)}
+                          style={{ textAlign:'left', padding:'10px 14px', display:'flex', alignItems:'center', gap:10,
+                            opacity: newCatDraft.label?.trim() ? 1 : 0.45 }}>
+                          <div style={{ flex:1, display:'flex', flexDirection:'column', gap:2 }}>
+                            <span style={{ fontWeight:500, fontSize:12.5 }}>{label}</span>
+                            <span style={{ fontSize:11, color:'var(--stone)', fontWeight:400 }}>{desc}</span>
+                          </div>
+                          {sugCode && <span style={{ fontSize:11, fontFamily:'monospace', color:'var(--stone)', flexShrink:0 }}>{sugCode}</span>}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
             </div>
             <div className="modal-foot" style={{ justifyContent:'flex-end' }}>
               <button className="btn btn-sm" onClick={() => { newCatDraft.resolve(null); setNewCatDraft(null); }}>Cancel</button>

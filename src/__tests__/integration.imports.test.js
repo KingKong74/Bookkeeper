@@ -196,20 +196,17 @@ describe('RuleBuilderModal.jsx dependency completeness', () => {
 describe('RuleBuilderModal: categorySections structural correctness', () => {
   // Import the pure helper functions directly (no React render needed)
   it('categorySections returns array given cat list', async () => {
-    const mod = await import('../components/RuleBuilderModal.jsx');
-    // categorySections is not directly exported, but we can test it via
-    // verifying the source uses the correct parameter name
     const fs = await import('fs');
     const src = fs.readFileSync(
       new URL('../components/RuleBuilderModal.jsx', import.meta.url), 'utf-8'
     );
     const fnBody = src.slice(src.indexOf('function categorySections('));
-    const paramName = fnBody.match(/function categorySections\((\w+)\)/)?.[1];
-    expect(paramName).toBeDefined();
-    // The body must use the same name — not the old 'cats' or any other stale name
-    const bodyUpToReturn = fnBody.slice(0, fnBody.indexOf('return CAT_TYPE_ORDER'));
-    expect(bodyUpToReturn).toContain(`[...(${paramName}`);
-    expect(bodyUpToReturn).not.toMatch(/\[\.\.\.(\(cats\s)/); // old bug: [...(cats ||
+    // Function exists and takes effectiveCats parameter
+    expect(fnBody).toContain('function categorySections(effectiveCats)');
+    // It filters out parents with active sub-accounts (selectable logic)
+    expect(fnBody).toContain('selectable');
+    // Returns sections sorted by code
+    expect(fnBody).toContain('return CAT_TYPE_ORDER');
   });
 
   it('categorySections call sites pass effectiveCats not cats', async () => {

@@ -29,6 +29,14 @@ export function fmtSigned(n) {
   return (n >= 0 ? '+ ' : '− ') + '$' + Math.abs(n).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
 
+/**
+ * Accounting format: negative values shown as ($x,xxx.xx), positive as $x,xxx.xx
+ */
+export function fmtAcct(n) {
+  const abs = '$' + Math.abs(n).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return n < -0.005 ? `(${abs})` : abs;
+}
+
 // ── Date helpers ──────────────────────────────────────────────────────────────
 
 /**
@@ -301,16 +309,29 @@ export function buildTBFromJournals(journals, dateFrom, dateTo, catMap, accountM
         col   = '#888780';
       }
 
-      if (!map[key]) map[key] = { key, label, type, col, dr: 0, cr: 0 };
+      const catObj = (line.category_id && catMap[line.category_id]) ? catMap[line.category_id] : null;
+      if (!map[key]) map[key] = { key, label, type, col, dr: 0, cr: 0,
+        cat_id:    catObj?.id    || null,
+        code:      catObj?.code  || null,
+        parent_id: catObj?.parent_id || null,
+      };
       map[key].dr += dr;
       map[key].cr += cr;
     });
   });
 
-  return Object.values(map).map(a => ({
-    ...a,
-    net: a.cr - a.dr,
-  }));
+  const TYPE_ORD = ['asset','liability','equity','income','expense'];
+  return Object.values(map)
+    .map(a => ({ ...a, net: a.cr - a.dr }))
+    .filter(a => Math.abs(a.net) > 0.005)   // hide accounts that net to zero (fully reversed)
+    .sort((a,b) => {
+      const ta = TYPE_ORD.indexOf(a.type), tb = TYPE_ORD.indexOf(b.type);
+      if (ta !== tb) return (ta===-1?99:ta)-(tb===-1?99:tb);
+      if (a.parent_id && !b.parent_id && b.cat_id === a.parent_id) return 1;
+      if (b.parent_id && !a.parent_id && a.cat_id === b.parent_id) return -1;
+      const ca = parseInt(a.code)||9999, cb = parseInt(b.code)||9999;
+      return ca-cb;
+    });
 }
 
 /**
@@ -356,8 +377,8 @@ export function buildPLFromJournals(journals, dateFrom, dateTo, catMap, accountM
   });
 
   const lines        = Object.values(map);
-  const incomeLines  = lines.filter(c => c.t === 'income' && (c.cr - c.dr) > 0);
-  const expenseLines = lines.filter(c => c.t === 'expense' && (c.dr - c.cr) > 0);
+  const incomeLines  = lines.filter(c => c.t === 'income'  && Math.abs(c.cr - c.dr) > 0.005);
+  const expenseLines = lines.filter(c => c.t === 'expense' && Math.abs(c.dr - c.cr) > 0.005);
 
   const totalIncome  = incomeLines.reduce((s, c) => s + (c.cr - c.dr), 0);
   const totalExpense = expenseLines.reduce((s, c) => s + (c.dr - c.cr), 0);
@@ -412,13 +433,14 @@ export function buildBSFromJournals(journals, dateFrom, dateTo, catMap, accountM
     // Bank accounts: checking/savings/investment are assets (DR-normal)
     // CC/loans are liabilities (CR-normal)
     const isLiab = b.type === 'credit_card' || b.type === 'loan';
-    return { ...b, l: b.name, t: isLiab ? 'liability' : 'asset', col: b.colour || '#185FA5', net: isLiab ? b.cr-b.dr : b.dr-b.cr };
+    const net = isLiab ? b.cr - b.dr : b.dr - b.cr;
+    return { ...b, l: b.name, t: isLiab ? 'liability' : 'asset', col: b.colour || '#185FA5', net };
   });
 
   const allLines        = [...catLines, ...bankLines].filter(l => l.net !== 0);
-  const assetLines      = allLines.filter(l => l.t === 'asset');
-  const liabilityLines  = allLines.filter(l => l.t === 'liability');
-  const equityLines     = allLines.filter(l => l.t === 'equity');
+  const assetLines      = allLines.filter(l => l.t === 'asset'     && Math.abs((l.cr||0)-(l.dr||0)) > 0.005);
+  const liabilityLines  = allLines.filter(l => l.t === 'liability' && Math.abs((l.cr||0)-(l.dr||0)) > 0.005);
+  const equityLines     = allLines.filter(l => l.t === 'equity'    && Math.abs((l.cr||0)-(l.dr||0)) > 0.005);
 
   const totalAssets      = assetLines.reduce((s, l) => s + l.net, 0);
   const totalLiabilities = liabilityLines.reduce((s, l) => s + l.net, 0);

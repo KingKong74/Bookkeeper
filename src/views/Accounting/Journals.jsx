@@ -19,17 +19,51 @@ function newForm() {
 // ── Consolidate journal lines by account name ─────────────────────────────────
 // Given an array of raw journal lines, sum DR and CR per account_name.
 // Returns sorted rows: highest total first.
-function consolidateLines(lines) {
+const TYPE_ORDER_GL = ['asset','liability','equity','income','expense'];
+
+function consolidateLines(lines, catMap) {
   const map = {};
   for (const l of lines) {
-    const name = l.account_name || l.ac || '—';
-    if (!map[name]) map[name] = { account_name: name, debit: 0, credit: 0 };
-    map[name].debit  += parseFloat(l.debit  || l.dr  || 0);
-    map[name].credit += parseFloat(l.credit || l.cr  || 0);
+    // Key by category_id if available, else account_name
+    const key  = l.category_id ? `cat:${l.category_id}` : (l.bank_account_id ? `bank:${l.bank_account_id}` : `name:${l.account_name||'—'}`);
+    const cat  = l.category_id && catMap ? catMap[l.category_id] : null;
+    const name = cat ? (cat.l || cat.label) : (l.account_name || l.ac || '—');
+    if (!map[key]) map[key] = {
+      key, account_name: name,
+      code:      cat?.code || null,
+      type:      cat?.t || cat?.type || null,
+      parent_id: cat?.parent_id || null,
+      cat_id:    l.category_id || null,
+      debit: 0, credit: 0
+    };
+    map[key].debit  += parseFloat(l.debit  || l.dr  || 0);
+    map[key].credit += parseFloat(l.credit || l.cr  || 0);
   }
-  return Object.values(map)
-    .filter(r => r.debit > 0.005 || r.credit > 0.005)
-    .sort((a,b) => (b.debit + b.credit) - (a.debit + a.credit));
+  const rows = Object.values(map).filter(r => r.debit > 0.005 || r.credit > 0.005);
+  // Add synthetic parent rows for accounts that only appear as child rows
+  if (catMap) {
+    const rowIds = new Set(rows.map(r=>r.cat_id).filter(Boolean));
+    [...new Set(rows.map(r=>r.parent_id).filter(Boolean))].forEach(pid => {
+      if (rowIds.has(pid)) return;
+      const parent = catMap[pid]; if (!parent) return;
+      const kids = rows.filter(r=>r.parent_id===pid);
+      const dr = kids.reduce((s,r)=>s+r.debit,0), cr = kids.reduce((s,r)=>s+r.credit,0);
+      if (!dr && !cr) return;
+      rows.push({ key:`cat:${pid}`, account_name:parent.l, code:parent.code||null,
+        type:parent.t, parent_id:null, cat_id:pid, debit:dr, credit:cr, synthetic:true });
+    });
+  }
+  rows.sort((a,b) => {
+    const ta = TYPE_ORDER_GL.indexOf(a.type), tb = TYPE_ORDER_GL.indexOf(b.type);
+    if (ta !== tb) return (ta===-1?99:ta) - (tb===-1?99:tb);
+    // Synthetic parent rows go AFTER their children
+    const aIsParent = a.synthetic && rows.some(r=>r.parent_id===a.cat_id);
+    const bIsParent = b.synthetic && rows.some(r=>r.parent_id===b.cat_id);
+    if (aIsParent && !bIsParent) return 1;
+    if (bIsParent && !aIsParent) return -1;
+    return (parseInt(a.code)||9999) - (parseInt(b.code)||9999);
+  });
+  return rows;
 }
 
 // ── General Ledger view ───────────────────────────────────────────────────────
@@ -37,24 +71,25 @@ function GeneralLedger({ journals, catMap, txns }) {
   const [search,   setSearch]   = useState('');
   const [expanded, setExpanded] = useState(new Set());
 
-  function toggleAccount(name) {
-    setExpanded(p => { const n = new Set(p); n.has(name) ? n.delete(name) : n.add(name); return n; });
+  function toggleAccount(key) {
+    setExpanded(p => { const n = new Set(p); n.has(key) ? n.delete(key) : n.add(key); return n; });
   }
 
-  // All raw lines from all active journals
+  // All raw lines from all active auto_category journals
   const allLines = useMemo(() =>
-    journals.filter(j => j.status !== 'void')
-             .flatMap(j => (j.journal_lines || j.lines || [])),
+    journals
+      .filter(j => j.status !== 'void' && (j.source === 'auto_category' || j.source === 'manual'))
+      .flatMap(j => (j.journal_lines || j.lines || [])),
     [journals]
   );
 
-  // Build a map: account_name → array of raw lines (each line has transaction_id)
+  // Build a map: key → array of raw lines
   const linesByAccount = useMemo(() => {
     const map = {};
     for (const l of allLines) {
-      const name = l.account_name || l.ac || '—';
-      if (!map[name]) map[name] = [];
-      map[name].push(l);
+      const key = l.category_id ? `cat:${l.category_id}` : (l.bank_account_id ? `bank:${l.bank_account_id}` : `name:${l.account_name||'—'}`);
+      if (!map[key]) map[key] = [];
+      map[key].push(l);
     }
     return map;
   }, [allLines]);
@@ -62,14 +97,16 @@ function GeneralLedger({ journals, catMap, txns }) {
   // Build txn lookup for quick access when expanding
   const txnById = useMemo(() => Object.fromEntries((txns||[]).map(t=>[t.id,t])), [txns]);
 
-  const consolidated = useMemo(() => consolidateLines(allLines), [allLines]);
+  const consolidated = useMemo(() => consolidateLines(allLines, catMap), [allLines, catMap]);
 
-  const filtered = search.trim()
-    ? consolidated.filter(r => r.account_name.toLowerCase().includes(search.toLowerCase()))
-    : consolidated;
+  // GL shows sub-accounts and standalone accounts — NOT synthetic parent summary rows
+  const filtered = (search.trim()
+    ? consolidated.filter(r => r.account_name.toLowerCase().includes(search.toLowerCase()) || (r.code||'').includes(search))
+    : consolidated
+  ).filter(r => !r.synthetic);
 
-  const totalDR = filtered.reduce((s,r) => s+r.debit, 0);
-  const totalCR = filtered.reduce((s,r) => s+r.credit, 0);
+  const totalDR = filtered.filter(r=>!r.synthetic).reduce((s,r) => s+r.debit, 0);
+  const totalCR = filtered.filter(r=>!r.synthetic).reduce((s,r) => s+r.credit, 0);
   const balanced = Math.abs(totalDR - totalCR) < 0.01;
 
   if (allLines.length === 0) {
@@ -104,8 +141,8 @@ function GeneralLedger({ journals, catMap, txns }) {
       {/* Account rows — click to expand transactions */}
       {filtered.map((r, idx) => {
         const net      = r.credit - r.debit;
-        const isExpand = expanded.has(r.account_name);
-        const acctLines = linesByAccount[r.account_name] || [];
+        const isExpand = expanded.has(r.key || r.account_name);
+        const acctLines = linesByAccount[r.key || r.account_name] || [];
         // Get unique transactions for this account (by transaction_id)
         const txnLines = acctLines.filter(l => l.transaction_id);
         const noTxnLines = acctLines.filter(l => !l.transaction_id);
@@ -115,15 +152,25 @@ function GeneralLedger({ journals, catMap, txns }) {
           <React.Fragment key={r.account_name}>
             {/* Account summary row */}
             <div
-              onClick={() => canExpand && toggleAccount(r.account_name)}
+              onClick={() => canExpand && toggleAccount(r.key || r.account_name)}
               style={{ display:'grid', gridTemplateColumns:'28px 1fr 110px 110px 100px', padding:'7px 14px',
-                borderBottom:'0.5px solid var(--bd)', background:idx%2===0?'#FDFAF6':'var(--sand)',
-                cursor:canExpand?'pointer':'default', alignItems:'center' }}
+                borderBottom: r.synthetic ? '0.5px dashed var(--bd2)' : '0.5px solid var(--bd)',
+                borderTop: r.synthetic ? '0.5px dashed var(--bd2)' : undefined,
+                background: r.synthetic ? 'var(--sand)' : idx%2===0?'#FDFAF6':'var(--sand)',
+                cursor:canExpand&&!r.synthetic?'pointer':'default', alignItems:'center',
+                opacity: r.synthetic ? 0.7 : 1 }}
               onMouseEnter={e => { if(canExpand) e.currentTarget.style.background='var(--al)'; }}
               onMouseLeave={e => { e.currentTarget.style.background=idx%2===0?'#FDFAF6':'var(--sand)'; }}
             >
               <span style={{ fontSize:11, color:'var(--stone)' }}>{canExpand ? (isExpand?'▾':'▸') : ''}</span>
-              <span style={{ fontWeight:500, fontSize:12.5 }}>{r.account_name}</span>
+              <span style={{ display:'flex', alignItems:'center', gap:6, paddingLeft: 0 }}>
+                
+                {r.code && <span style={{ fontFamily:'monospace', fontSize:11, color:'var(--stone)', flexShrink:0 }}>{r.code}</span>}
+                <span style={{ fontWeight:r.synthetic?600:500, fontSize:12.5 }}>
+                  {r.account_name}
+                  {r.synthetic && <span style={{ fontSize:9, marginLeft:6, padding:'1px 5px', borderRadius:99, background:'var(--sand2)', color:'var(--stone)', fontWeight:500 }}>total</span>}
+                </span>
+              </span>
               <span style={{ textAlign:'right', fontVariantNumeric:'tabular-nums', fontSize:12 }}>
                 {r.debit > 0.005 ? fmt(r.debit) : <span style={{ color:'var(--sand4)' }}>—</span>}
               </span>
@@ -147,27 +194,43 @@ function GeneralLedger({ journals, catMap, txns }) {
                   <span style={{ fontSize:10, fontWeight:600, color:'var(--stone)', textTransform:'uppercase', letterSpacing:'0.05em', textAlign:'right' }}>CR</span>
                   <span style={{ fontSize:10, fontWeight:600, color:'var(--stone)', textTransform:'uppercase', letterSpacing:'0.05em', textAlign:'right' }}>Date</span>
                 </div>
-                {txnLines.map((l, li) => {
-                  const txn = txnById[l.transaction_id];
-                  return (
-                    <div key={li} style={{ display:'grid', gridTemplateColumns:'28px 1fr 110px 110px 100px',
-                      padding:'5px 14px', borderBottom:'0.5px solid var(--bd)',
-                      background:li%2===0?'var(--sand)':'#FDFAF6' }}>
-                      <span/>
-                      <span style={{ fontSize:11.5, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
-                        {txn?.desc || l.account_name}
-                        {txn?.payee && <span style={{ color:'var(--stone)', marginLeft:6, fontSize:10 }}>{txn.payee}</span>}
-                      </span>
-                      <span style={{ textAlign:'right', fontVariantNumeric:'tabular-nums', fontSize:11.5 }}>
-                        {parseFloat(l.debit) > 0.005 ? fmt(parseFloat(l.debit)) : '—'}
-                      </span>
-                      <span style={{ textAlign:'right', fontVariantNumeric:'tabular-nums', fontSize:11.5 }}>
-                        {parseFloat(l.credit) > 0.005 ? fmt(parseFloat(l.credit)) : '—'}
-                      </span>
-                      <span style={{ textAlign:'right', fontSize:11, color:'var(--stone)' }}>{txn?.date || '—'}</span>
-                    </div>
-                  );
-                })}
+                {(() => {
+                  // Group by txn_id: reversal lines appear immediately after original
+                  const grouped = {};
+                  txnLines.forEach(l => {
+                    const k = l.transaction_id;
+                    if (!grouped[k]) grouped[k] = { orig:[], rev:[] };
+                    if (l.is_reversal) grouped[k].rev.push(l); else grouped[k].orig.push(l);
+                  });
+                  const orderedLines = [];
+                  Object.values(grouped).forEach(g => {
+                    g.orig.forEach(l => orderedLines.push({ l, isRev:false }));
+                    g.rev.forEach(l =>  orderedLines.push({ l, isRev:true  }));
+                  });
+                  return orderedLines.map(({ l, isRev }, li) => {
+                    const txn = txnById[l.transaction_id];
+                    return (
+                      <div key={li} style={{ display:'grid', gridTemplateColumns:'28px 1fr 110px 110px 100px',
+                        padding:'5px 14px', borderBottom:'0.5px solid var(--bd)',
+                        background: isRev ? 'rgba(163,45,45,0.06)' : li%2===0?'var(--sand)':'#FDFAF6' }}>
+                        <span/>
+                        <span style={{ fontSize:11.5, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap',
+                          color:isRev?'var(--rd)':undefined, display:'flex', alignItems:'center', gap:6 }}>
+                          {isRev && <span style={{ fontSize:9, padding:'1px 5px', borderRadius:99, background:'var(--rdb)', color:'var(--rd)', fontWeight:600, flexShrink:0 }}>REV</span>}
+                          {txn?.desc || l.account_name}
+                          {!isRev && txn?.payee && <span style={{ color:'var(--stone)', marginLeft:6, fontSize:10 }}>{txn.payee}</span>}
+                        </span>
+                        <span style={{ textAlign:'right', fontVariantNumeric:'tabular-nums', fontSize:11.5, color:isRev?'var(--rd)':undefined }}>
+                          {parseFloat(l.debit) > 0.005 ? fmt(parseFloat(l.debit)) : '—'}
+                        </span>
+                        <span style={{ textAlign:'right', fontVariantNumeric:'tabular-nums', fontSize:11.5, color:isRev?'var(--rd)':undefined }}>
+                          {parseFloat(l.credit) > 0.005 ? fmt(parseFloat(l.credit)) : '—'}
+                        </span>
+                        <span style={{ textAlign:'right', fontSize:11, color:isRev?'var(--rd)':'var(--stone)' }}>{txn?.date || '—'}</span>
+                      </div>
+                    );
+                  });
+                })()}
                 {noTxnLines.length > 0 && (
                   <div style={{ padding:'4px 14px 4px 42px', fontSize:11, color:'var(--stone)', fontStyle:'italic' }}>
                     +{noTxnLines.length} manual journal line{noTxnLines.length!==1?'s':''}
@@ -193,7 +256,7 @@ function GeneralLedger({ journals, catMap, txns }) {
 }
 
 // ── Journal entry list ────────────────────────────────────────────────────────
-function JournalList({ journals, onEdit, onVoid }) {
+function JournalList({ journals, onEdit, onVoid, onUnvoid, catMap }) {
   const [expanded, setExpanded] = useState(new Set());
 
   const toggle = id => setExpanded(p => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; });
@@ -205,12 +268,16 @@ function JournalList({ journals, onEdit, onVoid }) {
   return journals.map(j => {
     const rawLines   = (j.journal_lines || j.lines || []);
     const isAutoLedger = j.source === 'auto_category';
-    // For the auto ledger, consolidate lines for display; show count
-    const displayLines = isAutoLedger ? consolidateLines(rawLines) : rawLines;
+    const isReversal   = j.source === 'reversal';
+    // For collapsed summary: consolidate by account (no reversal lines, just net balances)
+    // For expanded detail: always show raw lines (so REV badge is visible)
+    const displayLines = isAutoLedger ? consolidateLines(rawLines, catMap) : rawLines;
     const isExpanded   = expanded.has(j.id);
     const isVoid       = j.status === 'void';
-    const totalDR      = rawLines.reduce((s,l)=>s+(parseFloat(l.debit||l.dr)||0),0);
-    const totalCR      = rawLines.reduce((s,l)=>s+(parseFloat(l.credit||l.cr)||0),0);
+    // Exclude reversal lines from header totals (they net to zero)
+    const nonRevLines  = rawLines.filter(l=>!l.is_reversal);
+    const totalDR      = nonRevLines.reduce((s,l)=>s+(parseFloat(l.debit||l.dr)||0),0);
+    const totalCR      = nonRevLines.reduce((s,l)=>s+(parseFloat(l.credit||l.cr)||0),0);
 
     return (
       <div key={j.id} style={{ borderBottom:'0.5px solid var(--bd)', opacity:isVoid?0.5:1 }}>
@@ -227,7 +294,11 @@ function JournalList({ journals, onEdit, onVoid }) {
             </div>
             <div style={{ fontSize:11, color:'var(--stone)', marginTop:1 }}>
               {j.date}
-              {isAutoLedger && ` · ${rawLines.length} entries · ${displayLines.length} accounts`}
+              {isAutoLedger && (() => {
+                const origCount = rawLines.filter(l=>!l.is_reversal).length;
+                const revCount  = rawLines.filter(l=>!!l.is_reversal).length;
+                return ` · ${origCount} entries${revCount>0?` · ${revCount} reversal${revCount>1?'s':''}`:''}`;
+              })()}
               {j.void_reason && ` · ${j.void_reason}`}
             </div>
           </div>
@@ -252,17 +323,71 @@ function JournalList({ journals, onEdit, onVoid }) {
                 <div key={i} style={{ padding:'4px 10px', fontSize:10, fontWeight:500, color:'var(--stone)', textTransform:'uppercase', letterSpacing:'0.05em', textAlign:i>0?'right':'left' }}>{h}</div>
               ))}
             </div>
-            {displayLines.map((l, i) => (
-              <div key={i} style={{ display:'grid', gridTemplateColumns:'1fr 100px 100px', borderTop:'0.5px solid var(--bd)', background:i%2===0?'#FDFAF6':'var(--sand)' }}>
-                <div style={{ padding:'5px 10px', fontSize:12 }}>{l.account_name || l.ac || '—'}</div>
-                <div style={{ padding:'5px 10px', fontSize:12, textAlign:'right', fontVariantNumeric:'tabular-nums' }}>
-                  {parseFloat(l.debit||l.dr) > 0.005 ? fmt(parseFloat(l.debit||l.dr)) : '—'}
-                </div>
-                <div style={{ padding:'5px 10px', fontSize:12, textAlign:'right', fontVariantNumeric:'tabular-nums' }}>
-                  {parseFloat(l.credit||l.cr) > 0.005 ? fmt(parseFloat(l.credit||l.cr)) : '—'}
-                </div>
-              </div>
-            ))}
+            {(() => {
+              // Group by account: sum originals and reversals separately
+              // Each gets its own DR line and CR line (never on the same row)
+              const accMap = {};
+              rawLines.forEach(l => {
+                const isRev = !!l.is_reversal;
+                const cat = l.category_id && catMap ? catMap[l.category_id] : null;
+                const key = l.category_id ? `cat:${l.category_id}` : l.bank_account_id ? `bank:${l.bank_account_id}` : `name:${l.account_name||'—'}`;
+                const name = cat ? (cat.code ? `${cat.code} · ${cat.l}` : cat.l) : (l.account_name || '—');
+                if (!accMap[key]) accMap[key] = { name, code: cat?.code||null, origDR:0, origCR:0, revDR:0, revCR:0 };
+                if (isRev) {
+                  accMap[key].revDR += parseFloat(l.debit||l.dr)||0;
+                  accMap[key].revCR += parseFloat(l.credit||l.cr)||0;
+                } else {
+                  accMap[key].origDR += parseFloat(l.debit||l.dr)||0;
+                  accMap[key].origCR += parseFloat(l.credit||l.cr)||0;
+                }
+              });
+
+              const rows = [];
+              const sortedAccs = Object.values(accMap).sort((a,b) => {
+                const ca = parseInt((a.code||'').replace(/\/.*$/,''))||9999;
+                const cb = parseInt((b.code||'').replace(/\/.*$/,''))||9999;
+                return ca - cb;
+              });
+              // Render as classic journal: DR entries first (indented right), CR entries (indented left)
+              sortedAccs.forEach((r, ai) => {
+                const bg = ai%2===0?'#FDFAF6':'var(--sand)';
+                if (r.origDR > 0.005) rows.push(
+                  <div key={`${ai}od`} style={{ display:'grid', gridTemplateColumns:'1fr 100px 100px', borderTop:'0.5px solid var(--bd)', background:bg, alignItems:'center' }}>
+                    <div style={{ padding:'5px 10px', fontSize:12.5, color:'var(--ink)' }}>{r.name}</div>
+                    <div style={{ padding:'5px 10px', fontSize:12.5, textAlign:'right', fontVariantNumeric:'tabular-nums', fontWeight:500 }}>{fmt(r.origDR)}</div>
+                    <div style={{ padding:'5px 10px', fontSize:12.5, textAlign:'right', color:'var(--stone)' }}>—</div>
+                  </div>
+                );
+                if (r.origCR > 0.005) rows.push(
+                  <div key={`${ai}oc`} style={{ display:'grid', gridTemplateColumns:'1fr 100px 100px', borderTop:'0.5px solid var(--bd)', background:bg, alignItems:'center' }}>
+                    <div style={{ padding:'5px 10px 5px 28px', fontSize:12.5, color:'var(--ink)' }}>{r.name}</div>
+                    <div style={{ padding:'5px 10px', fontSize:12.5, textAlign:'right', color:'var(--stone)' }}>—</div>
+                    <div style={{ padding:'5px 10px', fontSize:12.5, textAlign:'right', fontVariantNumeric:'tabular-nums', fontWeight:500 }}>{fmt(r.origCR)}</div>
+                  </div>
+                );
+                if (r.revDR > 0.005) rows.push(
+                  <div key={`${ai}rd`} style={{ display:'grid', gridTemplateColumns:'1fr 100px 100px', borderTop:'0.5px solid var(--bd)', background:'rgba(163,45,45,0.06)', alignItems:'center' }}>
+                    <div style={{ padding:'5px 10px', fontSize:12.5, color:'var(--rd)', display:'flex', alignItems:'center', gap:6 }}>
+                      <span style={{ fontSize:9, padding:'2px 5px', borderRadius:4, background:'var(--rd)', color:'#fff', fontWeight:700, flexShrink:0, letterSpacing:'0.04em' }}>REV</span>
+                      {r.name}
+                    </div>
+                    <div style={{ padding:'5px 10px', fontSize:12.5, textAlign:'right', fontVariantNumeric:'tabular-nums', color:'var(--rd)', fontWeight:500 }}>{fmt(r.revDR)}</div>
+                    <div style={{ padding:'5px 10px', fontSize:12.5, textAlign:'right', color:'var(--rd)' }}>—</div>
+                  </div>
+                );
+                if (r.revCR > 0.005) rows.push(
+                  <div key={`${ai}rc`} style={{ display:'grid', gridTemplateColumns:'1fr 100px 100px', borderTop:'0.5px solid var(--bd)', background:'rgba(163,45,45,0.06)', alignItems:'center' }}>
+                    <div style={{ padding:'5px 10px 5px 28px', fontSize:12.5, color:'var(--rd)', display:'flex', alignItems:'center', gap:6 }}>
+                      <span style={{ fontSize:9, padding:'2px 5px', borderRadius:4, background:'var(--rd)', color:'#fff', fontWeight:700, flexShrink:0, letterSpacing:'0.04em' }}>REV</span>
+                      {r.name}
+                    </div>
+                    <div style={{ padding:'5px 10px', fontSize:12.5, textAlign:'right', color:'var(--rd)' }}>—</div>
+                    <div style={{ padding:'5px 10px', fontSize:12.5, textAlign:'right', fontVariantNumeric:'tabular-nums', color:'var(--rd)', fontWeight:500 }}>{fmt(r.revCR)}</div>
+                  </div>
+                );
+              });
+              return rows;
+            })()}
             <div style={{ display:'grid', gridTemplateColumns:'1fr 100px 100px', borderTop:'0.5px solid var(--bd2)', background:'var(--sand)' }}>
               <div style={{ padding:'5px 10px', fontSize:12, fontWeight:500 }}>Total</div>
               <div style={{ padding:'5px 10px', fontSize:12, fontWeight:500, textAlign:'right', fontVariantNumeric:'tabular-nums' }}>{fmt(totalDR)}</div>
@@ -349,7 +474,8 @@ export function Journals() {
   }
 
   const activeJournals = useMemo(() => journals.filter(j=>j.status!=='void'), [journals]);
-  const manualJournals = useMemo(() => journals.filter(j=>j.source!=='auto_category'), [journals]);
+  const manualJournals   = useMemo(() => journals.filter(j=>j.source!=='auto_category'&&j.source!=='reversal'), [journals]);
+  const reversalJournals = useMemo(() => journals.filter(j=>j.source==='reversal'), [journals]);
 
   return (
     <div>
@@ -413,7 +539,11 @@ export function Journals() {
                   <div style={{ padding:'4px 6px' }}>
                     <input list={`acct-list-${i}`} value={l.ac} onChange={e=>updLine(i,'ac',e.target.value)} placeholder="Account name"
                       style={{ width:'100%', padding:'4px 6px', fontSize:12, border:lineErrs[i]?'0.5px solid var(--rd)':'0.5px solid var(--bd2)', borderRadius:'var(--rr)', background:'#FDFAF6', fontFamily:'var(--font-sans)' }} />
-                    <datalist id={`acct-list-${i}`}>{accountOptions.map(a=><option key={a} value={a}/>)}</datalist>
+                    <datalist id={`acct-list-${i}`}>
+                      {(cats||[]).filter(x=>x.is_active!==false).sort((a,b)=>(parseInt(a.code)||9999)-(parseInt(b.code)||9999)).map(a=>(
+                        <option key={a.id} value={a.code?`${a.code} · ${a.l}`:a.l}/>
+                      ))}
+                    </datalist>
                   </div>
                   {['dr','cr'].map(field=>(
                     <div key={field} style={{ padding:'4px 6px' }}>
@@ -459,15 +589,28 @@ export function Journals() {
 
       {/* ── Journal Entries tab ── */}
       {tab === 'entries' && (
-        <div className="card">
-          <div className="ch">
-            <h3>Journal entries</h3>
-            <p>{activeJournals.length} active · {journals.filter(j=>j.status==='void').length} voided</p>
+        <div>
+          {/* Manual + auto journal entries */}
+          <div className="card" style={{ marginBottom:12 }}>
+            <div className="ch">
+              <h3>Journal entries</h3>
+              <p>{activeJournals.filter(j=>j.source!=='reversal').length} active · {journals.filter(j=>j.status==='void').length} voided</p>
+            </div>
+            {activeJournals.filter(j=>j.source!=='reversal').length === 0 ? (
+              <div style={{ padding:'20px 14px', fontSize:12, color:'var(--stone)' }}>No entries posted yet.</div>
+            ) : (
+              <JournalList journals={activeJournals.filter(j=>j.source!=='reversal')} onEdit={loadForEdit} onVoid={voidJournal} catMap={catMap} />
+            )}
           </div>
-          {journals.length === 0 ? (
-            <div style={{ padding:'20px 14px', fontSize:12, color:'var(--stone)' }}>No entries posted yet.</div>
-          ) : (
-            <JournalList journals={journals} onEdit={loadForEdit} onVoid={voidJournal} />
+          {/* Reversal entries */}
+          {reversalJournals.length > 0 && (
+            <div className="card">
+              <div className="ch" style={{ background:'var(--rdb)' }}>
+                <h3 style={{ color:'var(--rd)' }}>↩ Reversals</h3>
+                <p style={{ color:'var(--rd)', opacity:0.8 }}>{reversalJournals.length} reversal{reversalJournals.length!==1?'s':''} — created when accounts were deactivated or transactions unallocated</p>
+              </div>
+              <JournalList journals={reversalJournals} onEdit={()=>{}} onVoid={voidJournal} onUnvoid={unvoidJournal} catMap={catMap} />
+            </div>
           )}
         </div>
       )}

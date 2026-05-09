@@ -65,6 +65,21 @@ export async function signOut() {
 }
 
 /** Get the current session (null if not logged in) */
+/** Fetch all rows from a query builder, auto-paginating past Supabase's 1000-row default limit */
+async function fetchAll(queryFn, page = 1000) {
+  let all = [], offset = 0;
+  while (true) {
+    const { data, error } = await queryFn(offset, offset + page - 1);
+    if (error) throw error;
+    if (!data || data.length === 0) break;
+    all = all.concat(data);
+    if (data.length < page) break;
+    offset += page;
+  }
+  return all;
+}
+
+
 export async function getSession() {
   const { data } = await supabase.auth.getSession();
   return data.session;
@@ -104,19 +119,29 @@ export async function inviteToOrg(orgId, email, role = 'member') {
 
 /** Fetch transactions for an org within a date range */
 export async function getTransactions(orgId, from, to) {
-  const { data, error } = await supabase
-    .from('transactions')
-    .select(`
-      *,
-      categories ( id, label, colour, type, account_group ),
-      payees      ( id, name, colour )
-    `)
-    .eq('org_id', orgId)
-    .gte('date', from)
-    .lte('date', to)
-    .order('date', { ascending: false });
-  if (error) throw error;
-  return data;
+  const PAGE = 1000;
+  let all = [];
+  let offset = 0;
+  while (true) {
+    const { data, error } = await supabase
+      .from('transactions')
+      .select(`
+        *,
+        accounts ( id, label, colour, type, account_group ),
+        payees      ( id, name, colour )
+      `)
+      .eq('org_id', orgId)
+      .gte('date', from)
+      .lte('date', to)
+      .order('date', { ascending: false })
+      .range(offset, offset + PAGE - 1);
+    if (error) throw error;
+    if (!data || data.length === 0) break;
+    all = all.concat(data);
+    if (data.length < PAGE) break;
+    offset += PAGE;
+  }
+  return all;
 }
 
 /** Insert a single transaction */
@@ -238,7 +263,7 @@ export async function bulkImportTransactions(orgId, transactions) {
 
 export async function getCategories(orgId) {
   const { data, error } = await supabase
-    .from('categories')
+    .from('accounts')
     .select('*')
     .eq('org_id', orgId)
     .order('sort_order');
@@ -248,7 +273,7 @@ export async function getCategories(orgId) {
 
 export async function createCategory(orgId, cat) {
   const { data, error } = await supabase
-    .from('categories')
+    .from('accounts')
     .insert({ org_id: orgId, ...cat })
     .select()
     .single();
@@ -258,7 +283,7 @@ export async function createCategory(orgId, cat) {
 
 export async function updateCategory(id, updates) {
   const { data, error } = await supabase
-    .from('categories')
+    .from('accounts')
     .update(updates)
     .eq('id', id)
     .select()
@@ -268,8 +293,32 @@ export async function updateCategory(id, updates) {
 }
 
 export async function deleteCategory(id) {
-  const { error } = await supabase.from('categories').delete().eq('id', id);
+  const { error } = await supabase.from('accounts').delete().eq('id', id);
   if (error) throw error;
+}
+
+/** Deactivate a category instead of deleting — preserves transaction history */
+export async function deactivateCategory(id) {
+  const { data, error } = await supabase
+    .from('accounts')
+    .update({ is_active: false })
+    .eq('id', id)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+/** Reactivate a previously deactivated category */
+export async function reactivateCategory(id) {
+  const { data, error } = await supabase
+    .from('accounts')
+    .update({ is_active: true })
+    .eq('id', id)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
 }
 
 
@@ -311,7 +360,7 @@ export async function deletePayee(id) {
 export async function getRules(orgId) {
   const { data, error } = await supabase
     .from('auto_cat_rules')
-    .select('*, categories(id, label, colour)')
+    .select('*, accounts(id, label, colour)')
     .eq('org_id', orgId)
     .order('sort_order');
   if (error) throw error;
@@ -352,7 +401,7 @@ export async function deleteRule(id) {
 export async function getBudgets(orgId, fyStart) {
   const { data, error } = await supabase
     .from('budgets')
-    .select('*, categories(id, label, colour, type)')
+    .select('*, accounts(id, label, colour, type)')
     .eq('org_id', orgId)
     .eq('fy_start', fyStart);
   if (error) throw error;
@@ -379,13 +428,59 @@ export async function upsertBudget(orgId, categoryId, fyStart, monthlyAmount) {
 // ════════════════════════════════════════════════════════════
 
 export async function getJournals(orgId) {
-  const { data, error } = await supabase
-    .from('journal_entries')
-    .select('*, journal_lines(*)')
-    .eq('org_id', orgId)
-    .order('date', { ascending: false });
-  if (error) throw error;
-  return data;
+  // Fetch journal_entries and journal_lines SEPARATELY to avoid nested 1000-row limit.
+  // When using select('*, journal_lines(*)'), PostgREST applies the row limit to
+  // the nested relation independently, silently truncating lines after 1000.
+
+  // Step 1: fetch ALL journal entry headers
+  const PAGE = 1000;
+  let entries = [];
+  let offset = 0;
+  while (true) {
+    const { data, error } = await supabase
+      .from('journal_entries')
+      .select('*')
+      .eq('org_id', orgId)
+      .order('date', { ascending: false })
+      .range(offset, offset + PAGE - 1);
+    if (error) throw error;
+    if (!data || data.length === 0) break;
+    entries = entries.concat(data);
+    if (data.length < PAGE) break;
+    offset += PAGE;
+  }
+  if (entries.length === 0) return [];
+
+  // Step 2: fetch ALL journal lines in batches by journal_entry_id
+  // Split into chunks of 200 IDs to avoid URL length limits on the IN clause
+  const entryIds = entries.map(e => e.id);
+  const CHUNK = 200;
+  let lines = [];
+  for (let i = 0; i < entryIds.length; i += CHUNK) {
+    const chunk = entryIds.slice(i, i + CHUNK);
+    let lineOffset = 0;
+    while (true) {
+      const { data, error } = await supabase
+        .from('journal_lines')
+        .select('*')
+        .in('journal_entry_id', chunk)
+        .range(lineOffset, lineOffset + PAGE - 1);
+      if (error) throw error;
+      if (!data || data.length === 0) break;
+      lines = lines.concat(data);
+      if (data.length < PAGE) break;
+      lineOffset += PAGE;
+    }
+  }
+
+  // Step 3: join lines back onto entries
+  const linesByEntry = {};
+  lines.forEach(l => {
+    if (!linesByEntry[l.journal_entry_id]) linesByEntry[l.journal_entry_id] = [];
+    linesByEntry[l.journal_entry_id].push(l);
+  });
+
+  return entries.map(e => ({ ...e, journal_lines: linesByEntry[e.id] || [] }));
 }
 
 /** Create a journal entry with all its lines in one transaction */
@@ -607,19 +702,32 @@ export { buildJournalLines };
  * ALL auto-posted category journal lines go into this one entry as a running ledger.
  */
 async function getOrCreateDailyLedger(orgId) {
-  // Look for existing master auto-category journal
-  const { data: existing } = await supabase
+  // Use array (not .single()) so zero-row result doesn't throw
+  const { data: rows } = await supabase
     .from('journal_entries')
     .select('id, source')
     .eq('org_id', orgId)
     .eq('source', 'auto_category')
-    .order('created_at', { ascending: true })
-    .limit(1)
-    .single();
+    .order('created_at', { ascending: true });
 
-  if (existing) return existing;
+  if (rows?.length >= 1) {
+    // If somehow duplicates exist, merge by moving all lines to the oldest entry
+    if (rows.length > 1) {
+      const keeper = rows[0];
+      const dupeIds = rows.slice(1).map(r => r.id);
+      // Move lines from duplicates to the keeper
+      for (const dupeId of dupeIds) {
+        await supabase
+          .from('journal_lines')
+          .update({ journal_entry_id: keeper.id })
+          .eq('journal_entry_id', dupeId);
+        await supabase.from('journal_entries').delete().eq('id', dupeId);
+      }
+    }
+    return rows[0];
+  }
 
-  // Create it
+  // Create the single master ledger
   const { data: created, error } = await supabase
     .from('journal_entries')
     .insert({
@@ -647,21 +755,41 @@ export async function postCategoryJournal(orgId, txn, category, bankAccount) {
   // Always use the single master ledger journal
   const ledger = await getOrCreateDailyLedger(orgId);
 
-  // Remove any existing lines for this transaction (re-categorising)
+  if (!category) {
+    // UNALLOCATING: fetch existing lines for this txn, then add reversal lines (is_reversal=true)
+    // so the GL shows the original + reversal (net zero). Do NOT delete the original lines.
+    const { data: existingLines } = await supabase
+      .from('journal_lines')
+      .select('*')
+      .eq('journal_entry_id', ledger.id)
+      .eq('transaction_id', txn.id)
+      .eq('is_reversal', false);  // only reverse originals, not existing reversals
+
+    if (existingLines?.length > 0) {
+      const reversalLines = existingLines.map((l, i) => ({
+        journal_entry_id: ledger.id,
+        account_name:     l.account_name,
+        debit:            parseFloat(l.credit) || 0,   // flip DR↔CR
+        credit:           parseFloat(l.debit)  || 0,
+        category_id:      l.category_id,
+        bank_account_id:  l.bank_account_id,
+        transaction_id:   txn.id,
+        sort_order:       (l.sort_order ?? 0) + 1000, // place after originals
+        is_reversal:      true,
+      }));
+      await supabase.from('journal_lines').insert(reversalLines);
+    }
+    await supabase.from('transactions').update({ journal_entry_id: null }).eq('id', txn.id);
+    return null;
+  }
+
+  // RE-CATEGORISING or new: remove old lines (original + any reversals) then add fresh lines
   if (txn.journal_entry_id || txn.id) {
-    // Delete lines that reference this transaction via a note or match by txn amounts
-    // We identify them by transaction_id stored on each line (added in migration 006)
     await supabase
       .from('journal_lines')
       .delete()
       .eq('journal_entry_id', ledger.id)
       .eq('transaction_id', txn.id);
-  }
-
-  if (!category) {
-    // Removing category — lines deleted above, clear the link
-    await supabase.from('transactions').update({ journal_entry_id: null }).eq('id', txn.id);
-    return null;
   }
 
   const lines = buildJournalLines(txn, category, bankAccount);
@@ -698,6 +826,63 @@ export async function postCategoryJournal(orgId, txn, category, bankAccount) {
   await supabase.from('transactions').update({ journal_entry_id: ledger.id }).eq('id', txn.id);
 
   return { ...ledger, lines };
+}
+
+/**
+ * createReversalForCategory(orgId, categoryId)
+ * Creates a reversal journal entry for all lines in the master ledger
+ * that reference the given category_id (used when deactivating an account).
+ */
+export async function createReversalForCategory(orgId, categoryId) {
+  // Use the single master ledger — add reversal lines there, no separate entry
+  const ledger = await getOrCreateDailyLedger(orgId);
+  if (!ledger) return null;
+
+  // Fetch all non-reversal lines for this category
+  const { data: lines } = await supabase
+    .from('journal_lines')
+    .select('*')
+    .eq('journal_entry_id', ledger.id)
+    .eq('category_id', categoryId)
+    .eq('is_reversal', false);
+
+  if (!lines?.length) return null;
+
+  // "reversalEntry" is now just the master ledger itself
+  const reversalEntry = ledger;
+
+  // For a full double-entry reversal we also need the bank-side lines
+  // that were originally paired with this category's lines.
+  // Fetch ALL lines for this transaction_id to get the paired bank lines.
+  const txnIds = [...new Set(lines.map(l=>l.transaction_id).filter(Boolean))];
+  let bankLines = [];
+  if (txnIds.length > 0) {
+    const { data: paired } = await supabase
+      .from('journal_lines')
+      .select('*')
+      .eq('journal_entry_id', ledger.id)
+      .in('transaction_id', txnIds);
+    // Include bank-side lines not already in `lines`
+    const lineIds = new Set(lines.map(l=>l.id));
+    bankLines = (paired||[]).filter(l=>!lineIds.has(l.id)&&l.bank_account_id);
+  }
+
+  const allOriginalLines = [...lines, ...bankLines];
+  const reversalLines = allOriginalLines.map((l, i) => ({
+    journal_entry_id: ledger.id,           // SAME master ledger
+    account_name:     l.account_name,
+    debit:            parseFloat(l.credit) || 0,   // flip DR↔CR
+    credit:           parseFloat(l.debit)  || 0,
+    category_id:      l.category_id,
+    bank_account_id:  l.bank_account_id,
+    transaction_id:   l.transaction_id,
+    sort_order:       (l.sort_order ?? 0) + 1000,
+    is_reversal:      true,
+  }));
+  await supabase.from('journal_lines').insert(reversalLines);
+  // Keep original lines — reversal lines create net zero. No deletion needed.
+
+  return reversalEntry;
 }
 
 /**
@@ -869,7 +1054,7 @@ export async function savePendingSuggestions(orgId, suggestions) {
 export async function getPendingSuggestions(orgId) {
   const { data, error } = await supabase
     .from('pending_suggestions')
-    .select('*, categories(id, label, colour, type)')
+    .select('*, accounts(id, label, colour, type)')
     .eq('org_id', orgId);
   if (error) throw error;
   return data ?? [];
@@ -882,4 +1067,100 @@ export async function dismissPendingSuggestion(transactionId, orgId) {
     .delete()
     .eq('transaction_id', transactionId)
     .eq('org_id', orgId);
+}
+
+// ════════════════════════════════════════════════════════════
+// MASTER COA
+// ════════════════════════════════════════════════════════════
+
+/** Fetch the full master COA reference list */
+export async function getMasterCOA() {
+  const { data, error } = await supabase
+    .from('master_coa')
+    .select('*')
+    .order('code');
+  if (error) throw error;
+  return data ?? [];
+}
+
+/** Create a category with code + optional parent */
+export async function createCategoryWithCode(orgId, payload) {
+  const { data, error } = await supabase
+    .from('accounts')
+    .insert({
+      org_id:        orgId,
+      label:         payload.label,
+      type:          payload.type,
+      account_group: payload.account_group || payload.group_name || payload.label,
+      colour:        payload.colour || '#888780',
+      sort_order:    payload.sort_order ?? 0,
+      code:          payload.code   || null,
+      parent_id:     payload.parent_id || null,
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+/** Update a category (including code / parent_id / is_active) */
+export async function updateCategoryFull(id, updates) {
+  const { data, error } = await supabase
+    .from('accounts')
+    .update(updates)
+    .eq('id', id)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+/** Bulk delete categories by id array */
+export async function bulkDeleteCategories(ids) {
+  if (!ids.length) return;
+  const { error } = await supabase
+    .from('accounts')
+    .delete()
+    .in('id', ids);
+  if (error) throw error;
+}
+
+/** Add accounts from master COA to org — import a set of master_coa codes */
+export async function importFromMasterCOA(orgId, masterRows) {
+  const toInsert = masterRows.map((m, i) => ({
+    org_id:        orgId,
+    label:         m.label,
+    type:          m.type,
+    account_group: m.group_name,
+    colour:        '#888780',
+    sort_order:    parseInt(m.code) || i,
+    code:          m.code,
+    parent_id:     null,
+  }));
+  const { data, error } = await supabase
+    .from('accounts')
+    .insert(toInsert)
+    .select();
+  if (error) throw error;
+  return data ?? [];
+}
+
+/** Seed default accounts — replaceAll=true clears existing org categories first */
+export async function seedCategoriesForOrg(orgId, template, replaceAll = false) {
+  if (replaceAll) {
+    await supabase.from('accounts').delete().eq('org_id', orgId);
+  }
+  const rows = template.map((t, i) => ({
+    org_id:        orgId,
+    label:         t.label,
+    type:          t.type,
+    account_group: t.group || t.group_name || t.account_group || t.label,
+    colour:        t.colour || '#888780',
+    sort_order:    t.sort_order ?? parseInt(t.code) ?? i,
+    code:          t.code || null,
+    parent_id:     null,
+  }));
+  const { data, error } = await supabase.from('accounts').insert(rows).select();
+  if (error) throw error;
+  return data ?? [];
 }

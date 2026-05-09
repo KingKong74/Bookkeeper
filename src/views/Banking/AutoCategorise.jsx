@@ -243,7 +243,7 @@ export function AutoCategorise({ onNavigate }) {
                   <h3>{suggestions.length} rule suggestion{suggestions.length > 1 ? 's' : ''}</h3>
                   <p>Matched by your auto-cat rules — approve to apply</p>
                 </div>
-                <button className="btn btn-approve btn-sm" onClick={() => approveAll(suggestions).then(() => onNavigate('transactions'))}>✓ Approve all</button>
+                <button className="btn btn-approve btn-sm" onClick={() => approveAll(suggestions).then(() => {})}>✓ Approve all</button>
               </div>
               <ColHeaders />
               {suggestions.map((sug, i) => <SuggestionRow key={`rule-${sug.txnId}-${i}`} sug={sug} isIntel={false} />)}

@@ -4,20 +4,94 @@
  */
 import React, { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
-import { createRule } from '../lib/supabase';
+import { createRule, createCategoryWithCode, createCategory } from '../lib/supabase';
 
 
 const CAT_TYPE_ORDER  = ['income', 'expense', 'asset', 'liability', 'equity'];
+
+// Inline "create new account" mini-form used inside the rule builder
+function NewAccountInline({ cats, onSave, onCancel }) {
+  const [name, setName] = React.useState('');
+  const [type, setType] = React.useState('expense');
+  const [code, setCode] = React.useState(() => {
+    const TYPE_RANGES = { asset:[100,399], liability:[400,599], equity:[600,699], income:[700,799], expense:[800,998] };
+    const [lo,hi] = TYPE_RANGES['expense'];
+    const used = new Set((cats||[]).filter(c=>c.code&&!c.code.includes('/')).map(c=>parseInt(c.code)).filter(n=>!isNaN(n)));
+    for (let n=lo; n<=hi; n++) { if (!used.has(n)) return String(n); }
+    return '';
+  });
+  const [saving, setSaving] = React.useState(false);
+
+  function updateSuggest(newType, newName) {
+    setCode(suggestAccountCode(cats, newType, newName));
+  }
+
+  return (
+    <div style={{ border:'0.5px solid var(--a)', borderRadius:'var(--rr)', padding:'8px 10px', background:'var(--ab)' }}>
+      <div style={{ display:'grid', gridTemplateColumns:'70px 1fr', gap:6, marginBottom:6 }}>
+        <div>
+          <div style={{ fontSize:9, color:'var(--stone)', marginBottom:2 }}>Code <span style={{ color:'var(--rd)' }}>*</span></div>
+          <input value={code} onChange={e=>setCode(e.target.value.replace(/[^0-9]/g,''))} maxLength={3}
+            placeholder="820" style={{ width:'100%', fontFamily:'monospace', fontSize:12, padding:'3px 6px', border:'0.5px solid var(--bd2)', borderRadius:'var(--rr)' }} />
+        </div>
+        <div>
+          <div style={{ fontSize:9, color:'var(--stone)', marginBottom:2 }}>Account name</div>
+          <input autoFocus value={name} onChange={e=>{ setName(e.target.value); updateSuggest(type, e.target.value); }}
+            placeholder="Account name…" style={{ width:'100%', fontSize:12, padding:'3px 6px', border:'0.5px solid var(--bd2)', borderRadius:'var(--rr)' }} />
+        </div>
+      </div>
+      <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+        <select value={type} onChange={e=>{ setType(e.target.value); updateSuggest(e.target.value, name); }}
+          style={{ fontSize:11.5, padding:'3px 6px', border:'0.5px solid var(--bd2)', borderRadius:'var(--rr)', flex:1 }}>
+          {[['expense','Expense'],['income','Income'],['asset','Asset'],['liability','Liability'],['equity','Equity']].map(([v,l])=>(
+            <option key={v} value={v}>{l}</option>
+          ))}
+        </select>
+        <button className="btn btn-a btn-sm" style={{ fontSize:11 }} disabled={!name.trim()||!code||saving}
+          onClick={async()=>{ setSaving(true); await onSave(name.trim(), type, code); setSaving(false); }}>
+          {saving?'…':'Create'}
+        </button>
+        <button className="btn btn-sm" style={{ fontSize:11 }} onClick={onCancel}>✕</button>
+      </div>
+    </div>
+  );
+}
+
 const CAT_TYPE_LABELS = { income:'Income', expense:'Expenses', asset:'Assets', liability:'Liabilities', equity:'Equity' };
 
 function categorySections(effectiveCats) {
-  const sorted = [...(effectiveCats || [])].sort((a, b) => {
-    const typeDiff = CAT_TYPE_ORDER.indexOf(a.t) - CAT_TYPE_ORDER.indexOf(b.t);
-    return typeDiff || (a.l || '').localeCompare(b.l || '');
+  // Exclude parents that have active sub-accounts (only show selectable accounts)
+  const selectable = (effectiveCats||[]).filter(c => {
+    if (c.is_active === false) return false;
+    const hasSubs = (effectiveCats||[]).some(ch=>ch.parent_id===c.id&&ch.is_active!==false);
+    return !hasSubs;
   });
-  return CAT_TYPE_ORDER
-    .map(type => ({ type, label: CAT_TYPE_LABELS[type], items: sorted.filter(cat => cat.t === type) }))
-    .filter(section => section.items.length > 0);
+  return CAT_TYPE_ORDER.map(type => {
+    const items = selectable.filter(cat=>cat.t===type)
+      .sort((a,b)=>(parseInt(a.code)||9999)-(parseInt(b.code)||9999)||(a.l||'').localeCompare(b.l||''));
+    return { type, label: CAT_TYPE_LABELS[type], items };
+  }).filter(s=>s.items.length>0);
+}
+
+function suggestAccountCode(cats, type, label) {
+  const TYPE_RANGES = { asset:[100,399], liability:[400,599], equity:[600,699], income:[700,799], expense:[800,998] };
+  const [lo, hi] = TYPE_RANGES[type] || [800,998];
+  const used = new Set((cats||[]).filter(c=>c.code&&!c.code.includes('/')).map(c=>parseInt(c.code)).filter(n=>!isNaN(n)));
+  if (!label?.trim()) {
+    for (let n=lo; n<=hi; n++) { if (!used.has(n)) return String(n); }
+    return '';
+  }
+  const peers = (cats||[]).filter(c=>c.t===type&&c.is_active!==false&&c.code&&!c.code.includes('/'))
+    .sort((a,b)=>(a.l||'').localeCompare(b.l||''));
+  const insertIdx = peers.findIndex(p=>(p.l||'').toLowerCase()>(label||'').toLowerCase());
+  const insertPos = insertIdx===-1 ? peers.length : insertIdx;
+  const rangeSize = hi-lo+1;
+  const idealNum  = lo+Math.round((insertPos/(peers.length+1))*rangeSize);
+  for (let delta=0; delta<=rangeSize; delta++) {
+    if (!used.has(idealNum+delta)&&idealNum+delta<=hi) return String(idealNum+delta);
+    if (!used.has(idealNum-delta)&&idealNum-delta>=lo) return String(idealNum-delta);
+  }
+  return '';
 }
 
 
@@ -27,37 +101,6 @@ function RuleBuilderModal({ initialForms, cats, setCats, rules, org, setRules, t
   const effectiveSetCats = setCats ?? ctxSetCats;
   const [forms, setForms] = useState(initialForms || []);
   const [savingRules, setSavingRules] = useState(false);
-  // Per-row inline create-category forms: { [rowIndex]: { name, type, saving } }
-  const [newCatForms, setNewCatForms] = useState({});
-
-  function openNewCatForm(i) {
-    setNewCatForms(prev => ({ ...prev, [i]: { name: '', type: 'expense', saving: false } }));
-  }
-  function closeNewCatForm(i) {
-    setNewCatForms(prev => { const n = {...prev}; delete n[i]; return n; });
-  }
-  async function saveNewCat(i) {
-    const form = newCatForms[i];
-    if (!form?.name?.trim()) return;
-    setNewCatForms(prev => ({ ...prev, [i]: { ...prev[i], saving: true } }));
-    try {
-      const { createCategory } = await import('../lib/supabase');
-      const newCat = await createCategory(org.id, {
-        label:         form.name.trim(),
-        type:          form.type,
-        account_group: form.name.trim(),
-        colour:        '#888780',
-        sort_order:    (effectiveCats||[]).length,
-      });
-      const norm = { id:newCat.id, l:newCat.label, t:newCat.type, ac:newCat.account_group, col:newCat.colour };
-      effectiveSetCats(prev => [...(prev||[]), norm]);
-      updateForm(i, { catId: newCat.id, catConfidence:'manual' });
-      closeNewCatForm(i);
-    } catch(err) {
-      setNewCatForms(prev => ({ ...prev, [i]: { ...prev[i], saving: false } }));
-      toast?.('Error: ' + err.message);
-    }
-  }
 
   useEffect(() => {
     setForms(initialForms || []);
@@ -72,9 +115,10 @@ function RuleBuilderModal({ initialForms, cats, setCats, rules, org, setRules, t
   async function saveRules() {
     const toSave = forms.filter(f => f.enabled && f.keyword.trim());
     if (toSave.length === 0) { setSaveError('No rules to save — enter a keyword or untick all.'); return; }
-    const missingCat = toSave.filter(f => !f.catId);
-    if (missingCat.length > 0) {
-      setSaveError(`${missingCat.length} rule${missingCat.length > 1 ? 's are' : ' is'} missing a category. Select a category or untick them.`);
+    // Rules need at least a category OR a payee to be useful
+    const noAction = toSave.filter(f => !f.catId && !(f.payee||'').trim());
+    if (noAction.length > 0) {
+      setSaveError(`${noAction.length} rule${noAction.length > 1 ? 's' : ''} need at least an account or payee. Fill them in or untick them.`);
       return;
     }
     setSaveError('');
@@ -153,7 +197,7 @@ function RuleBuilderModal({ initialForms, cats, setCats, rules, org, setRules, t
                 </div>
                 <div className="field" style={{ marginBottom:0 }}>
                   <label style={{ fontSize:10, display:'flex', alignItems:'center', gap:5 }}>
-                    Assign category
+                    Assign account
                     {form.catId && form.catConfidence === 'high' && (
                       <span style={{ fontSize:9, padding:'1px 6px', borderRadius:99, background:'var(--gnb)', color:'var(--gn)', fontWeight:600 }}>auto</span>
                     )}
@@ -161,55 +205,39 @@ function RuleBuilderModal({ initialForms, cats, setCats, rules, org, setRules, t
                       <span style={{ fontSize:9, padding:'1px 6px', borderRadius:99, background:'var(--al)', color:'var(--a2)', fontWeight:600 }}>~auto</span>
                     )}
                   </label>
-                  {newCatForms[i] ? (
-                    /* Inline create-category form */
-                    <div style={{ border:'0.5px solid var(--a)', borderRadius:'var(--rr)', padding:'8px 10px', background:'var(--ab)', display:'flex', flexDirection:'column', gap:6 }}>
-                      <input autoFocus
-                        value={newCatForms[i].name}
-                        onChange={e => setNewCatForms(prev => ({ ...prev, [i]: { ...prev[i], name: e.target.value } }))}
-                        onKeyDown={e => { if (e.key==='Enter') saveNewCat(i); if (e.key==='Escape') closeNewCatForm(i); }}
-                        onClick={e => e.stopPropagation()}
-                        placeholder="Category name…"
-                        style={{ fontSize:12, padding:'4px 8px', border:'0.5px solid var(--bd2)', borderRadius:'var(--rr)', background:'#FDFAF6', fontFamily:'var(--font-sans)' }}
-                      />
-                      <div style={{ display:'flex', gap:5, alignItems:'center' }}>
-                        <select value={newCatForms[i].type}
-                          onChange={e => setNewCatForms(prev => ({ ...prev, [i]: { ...prev[i], type: e.target.value } }))}
-                          onClick={e => e.stopPropagation()}
-                          style={{ flex:1, fontSize:11.5, padding:'3px 6px', border:'0.5px solid var(--bd2)', borderRadius:'var(--rr)', background:'#FDFAF6', fontFamily:'var(--font-sans)' }}>
-                          <option value="expense">Expense</option>
-                          <option value="income">Income</option>
-                          <option value="asset">Asset</option>
-                          <option value="liability">Liability</option>
-                          <option value="equity">Equity</option>
-                        </select>
-                        <button className="btn btn-a btn-sm"
-                          disabled={!newCatForms[i].name?.trim() || newCatForms[i].saving}
-                          onClick={e => { e.stopPropagation(); saveNewCat(i); }}
-                          style={{ fontSize:11 }}>
-                          {newCatForms[i].saving ? '…' : 'Create'}
-                        </button>
-                        <button className="btn btn-sm" onClick={e => { e.stopPropagation(); closeNewCatForm(i); }}
-                          style={{ fontSize:11 }}>✕</button>
-                      </div>
-                    </div>
-                  ) : (
-                    <select value={form.catId} onClick={e=>e.stopPropagation()}
-                      onChange={e => {
-                        if (e.target.value === '__new__') { openNewCatForm(i); }
-                        else { updateForm(i, { catId:e.target.value, catConfidence:'manual' }); }
+                  {form._showNewAccount ? (
+                    <NewAccountInline
+                      cats={effectiveCats}
+                      onSave={async (label, type, code) => {
+                        try {
+                          const payload = { label, type, account_group:label, colour:'#888780', sort_order:parseInt(code)||0, code };
+                          const newCat = await createCategoryWithCode(org.id, payload);
+                          const norm = { id:newCat.id, l:newCat.label, t:newCat.type, ac:newCat.account_group, col:newCat.colour, sort_order:newCat.sort_order, code:newCat.code||null, is_active:true };
+                          setCats(prev => [...(prev||[]), norm]);
+                          updateForm(i, { catId:newCat.id, catConfidence:'manual', _showNewAccount:false });
+                        } catch(err) { alert('Error: ' + err.message); }
                       }}
-                      style={{ fontSize:12, borderColor: form.catId && form.catConfidence==='high' ? 'var(--gn)' : form.catId && form.catConfidence==='medium' ? 'var(--a2)' : '' }}>
-                      <option value="">— choose category —</option>
-                      <option value="__new__">＋ Create new category…</option>
-                      {categorySections(effectiveCats).map(section => (
-                        <optgroup key={section.type} label={section.label}>
-                          {section.items.map(cat=>(
-                            <option key={cat.id} value={cat.id}>{cat.l}</option>
-                          ))}
-                        </optgroup>
-                      ))}
-                    </select>
+                      onCancel={() => updateForm(i, { _showNewAccount:false })}
+                    />
+                  ) : (
+                    <div style={{ display:'flex', gap:5, alignItems:'center' }}>
+                      <select value={form.catId} onClick={e=>e.stopPropagation()}
+                        onChange={e => {
+                          if (e.target.value === '__new__') { updateForm(i, { _showNewAccount:true }); }
+                          else { updateForm(i, { catId:e.target.value, catConfidence:'manual' }); }
+                        }}
+                        style={{ fontSize:12, flex:1, borderColor: form.catId && form.catConfidence==='high' ? 'var(--gn)' : form.catId && form.catConfidence==='medium' ? 'var(--a2)' : '' }}>
+                        <option value="">— choose account —</option>
+                        <option value="__new__">＋ Create new account…</option>
+                        {categorySections(effectiveCats).map(section => (
+                          <optgroup key={section.type} label={section.label}>
+                            {section.items.map(cat=>(
+                              <option key={cat.id} value={cat.id}>{cat.code?`${cat.code} · `:''}{cat.l}</option>
+                            ))}
+                          </optgroup>
+                        ))}
+                      </select>
+                    </div>
                   )}
                 </div>
                 <div className="field" style={{ marginBottom:0 }}>

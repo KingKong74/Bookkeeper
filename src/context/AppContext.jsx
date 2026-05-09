@@ -19,7 +19,7 @@ import {
   supabase, getMyOrgs, getTransactions, getCategories,
   getPayees, getRules, getJournals, getBudgets,
   getTaxProfile, getTaxReferenceData, upsertPayee,
-  getBankAccounts, getMerchantHints, getOrgSettings,
+  getBankAccounts, getMerchantHints, getMasterCOA, getOrgSettings,
 } from '../lib/supabase';
 import { currentFYStart } from '../utils/helpers';
 
@@ -53,9 +53,13 @@ function normaliseCat(c) {
 function normaliseRule(r) {
   return {
     ...r,
-    catId:    r.category_id ?? '',
-    payee:    r.payee_name  ?? '',
-    keyword:  r.keyword     ?? '',
+    catId:     r.category_id ?? '',
+    payee:     r.payee_name  ?? '',
+    keyword:   r.keyword     ?? '',
+    amtExact:  r.amt_exact  != null ? String(r.amt_exact)  : '',
+    amtMin:    r.amt_min    != null ? String(r.amt_min)    : '',
+    amtMax:    r.amt_max    != null ? String(r.amt_max)    : '',
+    direction: r.direction  ?? '',
   };
 }
 
@@ -76,6 +80,7 @@ export function AppProvider({ children }) {
   const [journals,     setJournals]     = useState([]);
   const [budgets,      setBudgets]      = useState([]);
   const [accounts,     setAccounts]     = useState([]);
+  const [masterCOA,    setMasterCOA]    = useState([]);
   const [merchantHints, setMerchantHints] = useState([]);
   const [orgSettings,   setOrgSettings]   = useState({ merchantIntelEnabled: true });
 
@@ -146,7 +151,7 @@ export function AppProvider({ children }) {
       const activeOrg = orgs[0];
       setOrg(activeOrg);
 
-      const [cats, pays, rls, jnls, txns, budgRows, taxProf, taxRef, accts, hints, settings] = await Promise.all([
+      const [cats, pays, rls, jnls, txns, budgRows, taxProf, taxRef, accts, hints, masterCOAData, settings] = await Promise.all([
         getCategories(activeOrg.id),
         getPayees(activeOrg.id),
         getRules(activeOrg.id),
@@ -157,6 +162,7 @@ export function AppProvider({ children }) {
         getTaxReferenceData(fyStart).catch(() => null),
         getBankAccounts(activeOrg.id).catch(() => []),
         getMerchantHints(activeOrg.id).catch(() => []),
+        getMasterCOA().catch(() => []),
         getOrgSettings(activeOrg.id).catch(() => ({})),
       ]);
 
@@ -170,6 +176,7 @@ export function AppProvider({ children }) {
       setTaxRefData(taxRef);
       setAccounts(accts || []);
       setMerchantHints(hints || []);
+      setMasterCOA(masterCOAData || []);
       setOrgSettings(prev => ({ merchantIntelEnabled:true, ...prev, ...(settings||{}) }));
     } catch (e) {
       console.error('Failed to load data:', e);
@@ -185,6 +192,23 @@ export function AppProvider({ children }) {
       setTransactions(txns.map(normaliseTxn));
     } catch (e) {
       console.error(e);
+    }
+  }
+
+  // Quiet background refresh (no spinner) — called on tab switches
+  async function refreshData() {
+    if (!org) return;
+    try {
+      const [cats, jnls, txns] = await Promise.all([
+        getCategories(org.id),
+        getJournals(org.id),
+        getTransactions(org.id, dateFrom, dateTo),
+      ]);
+      setCategories(cats.map(normaliseCat));
+      setJournals(jnls);
+      setTransactions(txns.map(normaliseTxn));
+    } catch (e) {
+      console.warn('Background refresh failed:', e.message);
     }
   }
 
@@ -235,6 +259,8 @@ export function AppProvider({ children }) {
     PALETTE,
     ensurePayee,
     reloadAll: loadAllData,
+    refreshData,
+    masterCOA, setMasterCOA,
     // Intelligence
     merchantHints, setMerchantHints,
     orgSettings,   setOrgSettings,

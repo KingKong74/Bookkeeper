@@ -11,7 +11,7 @@ import { createTransaction, upsertPayee } from '../../lib/supabase';
 import { logAudit } from '../../lib/audit';
 
 export function AddTransactionModal({ onClose }) {
-  const { cats, payees, setPayees, setTxns, org, user, toast, PALETTE } = useApp();
+  const { cats, setCats, payees, setPayees, setTxns, org, user, toast, PALETTE } = useApp();
 
   const [form, setForm] = useState({
     date:   new Date().toISOString().slice(0, 10),
@@ -24,6 +24,36 @@ export function AddTransactionModal({ onClose }) {
   });
   const [saving, setSaving] = useState(false);
   const [errors, setErrors] = useState({});
+  const [showNewCat,  setShowNewCat]  = useState(false);
+  const [newCatName,  setNewCatName]  = useState('');
+  const [newCatType,  setNewCatType]  = useState('expense');
+  const [newCatCode,  setNewCatCode]  = useState('');
+  const [savingCat,   setSavingCat]   = useState(false);
+
+  // Auto-suggest code: considers type range + alphabetical position of label
+  function suggestCode(type, label) {
+    const TYPE_RANGES = { asset:[100,399], liability:[400,599], equity:[600,699], income:[700,799], expense:[800,998] };
+    const [lo, hi] = TYPE_RANGES[type] || [800,998];
+    const used = new Set((cats||[]).filter(c=>c.code&&!c.code.includes('/')).map(c=>parseInt(c.code)).filter(n=>!isNaN(n)));
+    if (!label?.trim()) {
+      for (let n=lo; n<=hi; n++) { if (!used.has(n)) return String(n); }
+      return '';
+    }
+    const peers = (cats||[])
+      .filter(c=>c.t===type && c.is_active!==false && c.code && !c.code.includes('/'))
+      .sort((a,b)=>(a.l||'').localeCompare(b.l||''));
+    const newLabel = label.trim().toLowerCase();
+    const insertIdx = peers.findIndex(p=>(p.l||'').toLowerCase()>newLabel);
+    const insertPos = insertIdx===-1 ? peers.length : insertIdx;
+    const rangeSize = hi-lo+1;
+    const totalPeers = peers.length+1;
+    const idealNum = lo+Math.round((insertPos/totalPeers)*rangeSize);
+    for (let delta=0; delta<=rangeSize; delta++) {
+      if (!used.has(idealNum+delta) && idealNum+delta<=hi) return String(idealNum+delta);
+      if (!used.has(idealNum-delta) && idealNum-delta>=lo) return String(idealNum-delta);
+    }
+    return '';
+  }
 
   function validate() {
     const e = {};
@@ -32,6 +62,25 @@ export function AddTransactionModal({ onClose }) {
     const num = parseFloat(form.amt);
     if (isNaN(num) || num <= 0) e.amt = 'Enter a positive amount';
     return e;
+  }
+
+  async function saveNewCat() {
+    if (!newCatName.trim()) { toast('Account name is required.'); return; }
+    if (!newCatCode.trim()) { toast('Account code is required.'); return; }
+    const codeConflict = (cats||[]).find(x => x.code === newCatCode.trim() && x.l);
+    if (codeConflict) { toast(`Code ${newCatCode} is already used by "${codeConflict.l}".`); return; }
+    setSavingCat(true);
+    try {
+      const { createCategory, createCategoryWithCode } = await import('../../lib/supabase');
+      const payload = { label:newCatName.trim(), type:newCatType, account_group:newCatName.trim(), colour:PALETTE[(cats||[]).length%PALETTE.length], sort_order:parseInt(newCatCode)||0 };
+      const created = await createCategoryWithCode(org.id, { ...payload, code:newCatCode.trim() });
+      const norm = { ...created, l:created.label, t:created.type, col:created.colour, ac:created.account_group, code:created.code||null };
+      setCats(prev => [...(prev||[]), norm]);
+      f('cat', created.id);
+      setShowNewCat(false);
+      setNewCatName('');
+    } catch(e) { toast('Error: '+e.message); }
+    setSavingCat(false);
   }
 
   async function handleSave() {
@@ -167,11 +216,62 @@ export function AddTransactionModal({ onClose }) {
 
           <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
             <div className="field">
-              <label>Category</label>
-              <select value={form.cat} onChange={e => f('cat', e.target.value)}>
-                <option value="">Unallocated</option>
-                {cats.map(c => <option key={c.id} value={c.id}>{c.l}</option>)}
-              </select>
+              <label>Account</label>
+              {showNewCat ? (
+                <div style={{ border:'0.5px solid var(--a)', borderRadius:'var(--rr)', padding:'8px 10px', background:'var(--ab)' }}>
+                  <div style={{ display:'grid', gridTemplateColumns:'80px 1fr', gap:8, marginBottom:8 }}>
+                    <div>
+                      <div style={{ fontSize:10, color:'var(--stone)', marginBottom:3 }}>Code <span style={{ color:'var(--rd)' }}>*</span></div>
+                      <input value={newCatCode} onChange={e=>setNewCatCode(e.target.value)}
+                        style={{ width:'100%', fontFamily:'monospace', fontSize:12, padding:'3px 6px', border:'0.5px solid var(--bd2)', borderRadius:'var(--rr)' }}
+                        placeholder="e.g. 820" />
+                    </div>
+                    <div>
+                      <div style={{ fontSize:10, color:'var(--stone)', marginBottom:3 }}>Name</div>
+                      <input autoFocus value={newCatName} onChange={e=>{
+                          setNewCatName(e.target.value);
+                          // Re-suggest code as name changes (alphabetical slot)
+                          if (!newCatCode || newCatCode === suggestCode(newCatType)) {
+                            setNewCatCode(suggestCode(newCatType, e.target.value));
+                          }
+                        }}
+                        onKeyDown={e=>{ if(e.key==='Enter') saveNewCat(); if(e.key==='Escape') setShowNewCat(false); }}
+                        placeholder="Account name…"
+                        style={{ width:'100%', fontSize:12, padding:'3px 6px', border:'0.5px solid var(--bd2)', borderRadius:'var(--rr)' }} />
+                    </div>
+                  </div>
+                  <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+                    <select value={newCatType}
+                      onChange={e=>{ const t=e.target.value; setNewCatType(t); setNewCatCode(suggestCode(t)); }}
+                      style={{ fontSize:11.5, padding:'3px 6px', border:'0.5px solid var(--bd2)', borderRadius:'var(--rr)', flex:1 }}>
+                      {[['expense','Expense'],['income','Income'],['asset','Asset'],['liability','Liability'],['equity','Equity']].map(([v,l])=>(
+                        <option key={v} value={v}>{l}</option>
+                      ))}
+                    </select>
+                    <button className="btn btn-a btn-sm" disabled={!newCatName.trim()||savingCat} onClick={saveNewCat} style={{ fontSize:11 }}>
+                      {savingCat?'…':'Create account'}
+                    </button>
+                    <button className="btn btn-sm" onClick={()=>setShowNewCat(false)} style={{ fontSize:11 }}>✕</button>
+                  </div>
+                </div>
+              ) : (
+                <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+                  <select value={form.cat} onChange={e=>f('cat',e.target.value)} style={{ flex:1 }}>
+                    <option value="">Unallocated</option>
+                    {['asset','liability','equity','income','expense'].map(type => {
+                      const group = (cats||[]).filter(c=>c.t===type).sort((a,b)=>(a.sort_order||0)-(b.sort_order||0));
+                      if (!group.length) return null;
+                      return <optgroup key={type} label={{asset:'Assets',liability:'Liabilities',equity:'Equity',income:'Revenue',expense:'Expenses'}[type]}>
+                        {group.map(c=><option key={c.id} value={c.id}>{c.code?`${c.code} · `:''}{c.l}</option>)}
+                      </optgroup>;
+                    })}
+                  </select>
+                  <button className="btn btn-sm" style={{ fontSize:11, flexShrink:0 }}
+                onClick={()=>{ const t=form.type==='income'?'income':'expense'; setNewCatType(t); setNewCatCode(suggestCode(t)); setNewCatName(''); setShowNewCat(true); }}>
+                    + New
+                  </button>
+                </div>
+              )}
             </div>
             <div className="field">
               <label>Payee</label>

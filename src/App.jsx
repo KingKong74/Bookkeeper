@@ -8,7 +8,7 @@
  *   4. View routing — maps view keys to components
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useApp } from './context/AppContext';
 import { Sidebar } from './components/layout/Sidebar';
 import { Toast } from './components/ui/index';
@@ -42,10 +42,20 @@ export default function App() {
     dateFrom, dateTo, fyMode,
     toastMsg, toast,
     user, org,
+    refreshData,
   } = useApp();
 
   const [view, setView] = useState('dashboard');
   const [defaultAccountTab, setDefaultAccountTab] = useState(null);
+
+  // Subtle background refresh on tab switch — keeps data fresh without a full reload
+  const prevView = useRef(view);
+  useEffect(() => {
+    if (prevView.current !== view && org && refreshData) {
+      refreshData();
+    }
+    prevView.current = view;
+  }, [view]); // eslint-disable-line
 
   if (authLoading) return <Splash text="Loading…" />;
   if (!session)    return <AuthScreen />;
