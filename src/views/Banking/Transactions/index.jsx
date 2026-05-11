@@ -5,7 +5,6 @@
  */
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useApp } from '../../../context/AppContext';
-import { PeriodBar } from '../../../components/ui/PeriodBar';
 import { TransactionModal }    from '../TransactionModal';
 import { AddTransactionModal } from '../AddTransactionModal';
 import { fmt, filterByDateRange, runAutoCatRules, estimateCategoryForMerchant } from '../../../utils/helpers';
@@ -25,14 +24,20 @@ const CAT_TYPE_ORDER = ['income', 'expense', 'asset', 'liability', 'equity'];
 
 export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
   const { txns, setTxns, cats, setCats, catMap, rules, setRules, payees, setPayees,
-          accounts, dateFrom, dateTo, toast, org, user, PALETTE } = useApp();
+          accounts, journals, setJournals, dateFrom, dateTo, toast, org, user, PALETTE,
+          refreshData } = useApp();
 
-  const [accountTab,  setAccountTab]  = useState(defaultAccountTab);
-  const [allocTab,    setAllocTab]    = useState('all');
-  const [search,      setSearch]      = useState('');
-  const [typeFilter,  setTypeFilter]  = useState('');
-  const [payeeFilter, setPayeeFilter] = useState('');
-  const [selected,    setSelected]    = useState(new Set());
+  const [accountTab,    setAccountTab]    = useState(defaultAccountTab);
+  const [allocTab,      setAllocTab]      = useState('all');
+  const [search,        setSearch]        = useState('');
+  const [typeFilter,    setTypeFilter]    = useState('');
+  const [payeeFilter,   setPayeeFilter]   = useState('');
+  const [selected,      setSelected]      = useState(new Set());
+  const [compactView,   setCompactView]   = useState(true);   // Reconcile tab view mode
+  const [showFilter,    setShowFilter]    = useState(false);  // Filter panel open
+  // Local date range — only active when filter is open and user sets dates
+  const [localDateFrom, setLocalDateFrom] = useState('');
+  const [localDateTo,   setLocalDateTo]   = useState('');
   const [sortCol,     setSortCol]     = useState('date');
   const [sortDir,     setSortDir]     = useState('desc');
 
@@ -41,11 +46,17 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
     else { setSortCol(col); setSortDir(col === 'date' ? 'desc' : 'asc'); }
   }
 
-  // Auto-assign payees from description matching
+  // Auto-assign payees from description matching — runs once per session on mount.
+  // Sequential (not parallel) to avoid overwhelming the browser connection pool.
+  const autoPayeeRanRef = useRef(false);
   useEffect(() => {
+    if (autoPayeeRanRef.current) return;
     if (!txns?.length || !payees?.length) return;
+    autoPayeeRanRef.current = true;
+
     const unassigned = txns.filter(t => !t.payee_id);
     if (!unassigned.length) return;
+
     const sortedPayees = [...payees].sort((a, b) => (b.name || '').length - (a.name || '').length);
     const toAssign = [];
     for (const t of unassigned) {
@@ -60,10 +71,26 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
       if (matched) toAssign.push({ txnId: t.id, payeeId: matched.id, payeeName: matched.name });
     }
     if (!toAssign.length) return;
-    Promise.all(toAssign.map(({ txnId, payeeId }) => updateTransaction(txnId, { payee_id: payeeId }).catch(() => {}))).then(() => {
-      setTxns(p => (p || []).map(t => { const found = toAssign.find(a => a.txnId === t.id); return found ? { ...t, payee: found.payeeName, payee_id: found.payeeId } : t; }));
-    });
-  }, [txns?.length, payees?.length]); // eslint-disable-line
+
+    // Apply optimistically to UI immediately — no network wait
+    setTxns(p => (p || []).map(t => {
+      const found = toAssign.find(a => a.txnId === t.id);
+      return found ? { ...t, payee: found.payeeName, payee_id: found.payeeId } : t;
+    }));
+
+    // Persist to DB in small sequential batches to avoid connection exhaustion
+    (async () => {
+      const BATCH = 5;
+      for (let i = 0; i < toAssign.length; i += BATCH) {
+        const chunk = toAssign.slice(i, i + BATCH);
+        await Promise.allSettled(
+          chunk.map(({ txnId, payeeId }) => updateTransaction(txnId, { payee_id: payeeId }).catch(() => {}))
+        );
+        // Small pause between batches
+        if (i + BATCH < toAssign.length) await new Promise(r => setTimeout(r, 50));
+      }
+    })();
+  }, []); // eslint-disable-line
 
   const [bulkCatDD,   setBulkCatDD]   = useState(false);
   const bulkBtnRef                    = useRef(null);
@@ -78,6 +105,7 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
   const [justAllocated, setJustAllocated] = useState(new Set());
   const lastClickedIdx  = useRef(null);
   const recentAllocRef  = useRef({});
+  const journalTimers   = useRef({}); // debounce rapid re-categorisation
 
   useEffect(() => {
     if (defaultAccountTab !== null) { setAccountTab(defaultAccountTab); onClearDefaultTab?.(); }
@@ -120,17 +148,30 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
     const map = {};
     (accounts || []).forEach(a => {
       const sum = (txns || []).filter(t => t.account_id === a.id).reduce((s, t) => s + (t.amt ?? 0), 0);
-      map[a.id] = (a.opening_balance || 0) + sum;
+      const ob  = parseFloat(a.opening_balance) || 0;
+      const isCC = a.type === 'credit_card' || a.type === 'loan';
+      if (isCC) {
+        // CC: opening_balance = amount owed at statement start (positive = owed)
+        // Spending transactions are negative (reduce your bank balance → increase CC debt)
+        // Current owed = opening_owed + (-sum_of_txns)  (spending is negative, so -negative = positive debt)
+        map[a.id] = ob - sum; // sum is negative for spending → -sum is positive = more owed
+      } else {
+        // Asset account: balance = opening + transactions (spending negative, deposits positive)
+        map[a.id] = ob + sum;
+      }
     });
     return map;
   }, [accounts, txns]);
 
   const baseFt = useMemo(() => {
-    let ft = filterByDateRange(txns || [], dateFrom, dateTo);
+    // If local date filter set, use it; otherwise show ALL transactions (no date limit)
+    let ft = (localDateFrom && localDateTo)
+      ? filterByDateRange(txns || [], localDateFrom, localDateTo)
+      : (txns || []);
     if (accountTab === 'unlinked') ft = ft.filter(t => !t.account_id);
     else if (accountTab)           ft = ft.filter(t => t.account_id === accountTab);
     return ft;
-  }, [txns, dateFrom, dateTo, accountTab]);
+  }, [txns, localDateFrom, localDateTo, accountTab]);
 
   const recon = useMemo(() => {
     const total = baseFt.length, matched = baseFt.filter(t => !!t.cat).length;
@@ -140,8 +181,11 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
   }, [baseFt]);
 
   let ft = [...baseFt];
-  if (allocTab === 'categorised')   ft = ft.filter(t => !!t.cat);
+  // Reconcile: needs categorisation
   if (allocTab === 'uncategorised') ft = ft.filter(t => !t.cat);
+  // Bank Statements: all imported bank transactions (reconciled + unreconciled)
+  if (allocTab === 'categorised')   ft = ft.filter(t => t.imported || !!t.account_id);
+  // Account Transactions ('all'): no extra filter — shows everything
   if (search)       ft = ft.filter(t => t.desc.toLowerCase().includes(search.toLowerCase()) || (t.payee || '').toLowerCase().includes(search.toLowerCase()) || t.date.includes(search));
   if (typeFilter === 'in')  ft = ft.filter(t => t.amt > 0);
   if (typeFilter === 'out') ft = ft.filter(t => t.amt < 0);
@@ -159,6 +203,44 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
     return 0;
   });
   if (typeof window !== 'undefined') window.__ledgerFt = ft;
+  const showBalance = allocTab === 'categorised'; // Balance column only on Bank Statements
+
+  // Running balance: computed from ALL transactions for each account (not just the filtered set).
+  // This ensures the balance is correct even when viewing a filtered subset (Bank Statements tab).
+  // We compute the cumulative balance for every txn in allTxns, oldest→newest, then display
+  // the balance for each txn in ft by looking it up in the map.
+  const runningBal = (() => {
+    if (!showBalance) return {};
+    const map = {};
+    // Group ALL txns by account (not just ft — so balance is correct even in filtered views)
+    const allByAcct = {};
+    (txns || []).forEach(t => {
+      if (!t.account_id) return;
+      if (!allByAcct[t.account_id]) allByAcct[t.account_id] = [];
+      allByAcct[t.account_id].push(t);
+    });
+    Object.entries(allByAcct).forEach(([acctId, acctTxns]) => {
+      const acct  = (accounts || []).find(a => a.id === acctId);
+      const ob    = parseFloat(acct?.opening_balance) || 0;
+      const isCC  = acct?.type === 'credit_card' || acct?.type === 'loan';
+      // Sort ALL account txns chronologically oldest first
+      const ordered = [...acctTxns].sort((a, b) => {
+        const d = a.date.localeCompare(b.date);
+        return d !== 0 ? d : (a.id < b.id ? -1 : 1); // stable secondary sort
+      });
+      let running = ob; // start from opening balance
+      ordered.forEach(t => {
+        const amt = t.amt ?? 0;
+        // CC: spending (negative amt) means more owed → running - amt (subtracting negative = adding)
+        // Asset: deposits positive, spending negative → running + amt
+        running = isCC ? running - amt : running + amt;
+        map[t.id] = running;
+      });
+    });
+    // Mark any txn without an account as null
+    ft.forEach(t => { if (!(t.id in map)) map[t.id] = null; });
+    return map;
+  })();
 
   const ua            = baseFt.filter(t => !t.cat).length;
   const unlinkedCount = useMemo(() => filterByDateRange(txns || [], dateFrom, dateTo).filter(t => !t.account_id).length, [txns, dateFrom, dateTo]);
@@ -191,9 +273,23 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
     logAudit({ orgId: org.id, userId: user?.id, transaction: txn, action: catId ? 'category_changed' : 'unallocated', changedFields: { category: { from: prev ?? 'Unallocated', to: next ?? 'Unallocated' } } }).catch(() => {});
     if (catId) {
       const cat = catMap[catId], acct = txn?.account_id ? (accounts || []).find(a => a.id === txn.account_id) : null;
-      postCategoryJournal(org.id, txn ?? { id: txnId, date: '', desc: '', amt: 0 }, cat, acct)
-        .then(entry => { if (entry) setTxns(p => (p || []).map(t => t.id === txnId ? { ...t, journal_entry_id: entry.id } : t)); })
-        .catch(e => console.warn('Journal post failed:', e.message));
+      // Debounce rapid re-categorisation: cancel pending journal post for this txn
+      if (journalTimers.current[txnId]) clearTimeout(journalTimers.current[txnId]);
+      journalTimers.current[txnId] = setTimeout(() => {
+        delete journalTimers.current[txnId];
+        postCategoryJournal(org.id, txn ?? { id: txnId, date: '', desc: '', amt: 0 }, cat, acct)
+          .then(entry => {
+            if (entry) {
+              // Update transaction with the journal entry id
+              setTxns(p => (p || []).map(t => t.id === txnId ? { ...t, journal_entry_id: entry.id } : t));
+              // Refresh journals so GL and Journals view update without reload
+              import('../../../services/journalService').then(({ fetchJournals }) => {
+                fetchJournals(org.id).then(jnls => setJournals(jnls)).catch(() => {});
+              });
+            }
+          })
+          .catch(e => console.warn('Journal post failed:', e.message));
+      }, 400); // wait 400ms — if user changes category again, the timer resets
     }
     if (catId && allocTab === 'uncategorised') {
       setJustAllocated(p => new Set([...p, txnId]));
@@ -278,10 +374,16 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
   async function bulkAssignBank(accountId) {
     if (!accountId || selected.size === 0) return;
     const ids = [...selected];
-    await Promise.all(ids.map(id => updateTransaction(id, { account_id: accountId })));
+    // Optimistic update first
     setTxns(p => (p || []).map(t => selected.has(t.id) ? { ...t, account_id: accountId } : t));
     setSelected(new Set()); setBulkBankId('');
     toast(`${ids.length} transactions assigned to ${(accounts || []).find(a => a.id === accountId)?.name || 'account'}.`);
+    // Sequential batches to avoid connection exhaustion
+    const BATCH = 10;
+    for (let i = 0; i < ids.length; i += BATCH) {
+      await Promise.allSettled(ids.slice(i, i + BATCH).map(id => updateTransaction(id, { account_id: accountId }).catch(() => {})));
+      if (i + BATCH < ids.length) await new Promise(r => setTimeout(r, 50));
+    }
   }
 
   async function bulkAllocate(catId) {
@@ -297,10 +399,19 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
     toast(`${ids.length} transaction${ids.length > 1 ? 's' : ''} → ${isUnassign ? 'Unassigned' : catMap[catId]?.l}.`);
     if (!isUnassign) {
       const cat = catMap[catId];
-      Promise.all((txns || []).filter(t => ids.includes(t.id)).map(txn => {
-        const acct = txn.account_id ? (accounts || []).find(a => a.id === txn.account_id) : null;
-        return postCategoryJournal(org.id, txn, cat, acct).catch(e => console.warn('Bulk journal failed:', e.message));
-      }));
+      // Sequential batches — avoid ERR_INSUFFICIENT_RESOURCES from hundreds of simultaneous PATCHes
+      const txnsToPost = (txns || []).filter(t => ids.includes(t.id));
+      (async () => {
+        const BATCH = 5;
+        for (let i = 0; i < txnsToPost.length; i += BATCH) {
+          const chunk = txnsToPost.slice(i, i + BATCH);
+          await Promise.allSettled(chunk.map(txn => {
+            const acct = txn.account_id ? (accounts || []).find(a => a.id === txn.account_id) : null;
+            return postCategoryJournal(org.id, txn, cat, acct).catch(e => console.warn('Bulk journal failed:', e.message));
+          }));
+          if (i + BATCH < txnsToPost.length) await new Promise(r => setTimeout(r, 80));
+        }
+      })();
     }
   }
 
@@ -340,8 +451,6 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
 
   return (
     <>
-      <PeriodBar />
-
       <div className="card" style={{ marginBottom: 0, borderBottomLeftRadius: 0, borderBottomRightRadius: 0, borderBottom: 'none' }}>
         <TransactionFilters
           accounts={accounts} txns={txns} dateFrom={dateFrom} dateTo={dateTo}
@@ -358,51 +467,84 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
           cats={cats} catsByType={catsByType}
           bulkAllocate={bulkAllocate} bulkAssignBank={bulkAssignBank}
           setShowAdd={setShowAdd}
+          allTxns={txns}
+          baseFtCount={baseFt.length}
+          compactView={compactView}
+          setCompactView={setCompactView}
+          showFilter={showFilter}
+          setShowFilter={setShowFilter}
+          localDateFrom={localDateFrom}
+          setLocalDateFrom={setLocalDateFrom}
+          localDateTo={localDateTo}
+          setLocalDateTo={setLocalDateTo}
         />
 
-        {/* Account info banner */}
-        {accountTab && accountTab !== 'unlinked' && (() => {
-          const a = (accounts || []).find(x => x.id === accountTab); if (!a) return null;
-          const bal = acctBalances[a.id] ?? 0, isCC = a.type === 'credit_card';
+        {/* Table — two layouts: Xero-style 2-panel (Reconcile, non-compact) vs compact */}
+        {(() => {
+          const isXero = allocTab === 'uncategorised' && !compactView;
           return (
-            <div style={{ padding: '6px 14px', background: `${a.colour || '#888'}12`, borderBottom: '0.5px solid var(--bd)', display: 'flex', alignItems: 'center', gap: 14, fontSize: 12 }}>
-              <span style={{ width: 9, height: 9, borderRadius: '50%', background: a.colour || '#888', display: 'inline-block' }} />
-              <strong>{a.name}</strong>
-              <span style={{ color: 'var(--stone)', textTransform: 'capitalize' }}>{a.type.replace('_', ' ')}</span>
-              <span style={{ marginLeft: 'auto', fontWeight: 500 }} className={isCC ? (bal > 0 ? 'vn' : 'vp') : (bal >= 0 ? '' : 'vn')}>
-                {isCC ? `${fmt(Math.abs(bal))} owed` : `Balance: ${fmt(bal)}`}
-              </span>
-            </div>
-          );
-        })()}
-
-        {/* Table */}
-        <table style={{ tableLayout: 'fixed' }}>
+        <div style={isXero ? { maxWidth: 860, margin: '0 auto' } : {}}>
+        <table style={{ tableLayout: 'fixed', width: '100%' }}>
           <colgroup>
-            <col style={{ width: 32 }} />
-            <col style={{ width: 82 }} />
-            <col style={{ width: '28%' }} />
-            <col style={{ width: 130 }} />
-            <col style={{ width: 140 }} />
-            <col style={{ width: 90 }} />
-            {accountTab === null && <col style={{ width: 100 }} />}
-            <col style={{ width: 70 }} />
-            <col style={{ width: 28 }} />
+            <col style={{ width: 36 }} />
+            {isXero ? (
+              <>
+                <col style={{ width: '43%' }} />
+                <col />
+                <col style={{ width: 28 }} />
+              </>
+            ) : (
+              <>
+                <col style={{ width: 82 }} />
+                <col style={{ width: '22%' }} />
+                <col style={{ width: '17%' }} />
+                <col style={{ width: '19%' }} />
+                <col style={{ width: 74 }} />
+                <col style={{ width: 74 }} />
+                {showBalance && <col style={{ width: 78 }} />}
+                {accountTab === null && <col style={{ width: 82 }} />}
+                <col style={{ width: 58 }} />
+                <col style={{ width: 26 }} />
+              </>
+            )}
           </colgroup>
           <thead>
             <tr>
-              <th style={{ width:36, padding:'0 0 0 10px', verticalAlign:'middle', textAlign:'left' }}>
+              <th style={{ padding:'0 0 0 10px', verticalAlign:'middle', textAlign:'left' }}>
                 <input type="checkbox" checked={ft.length > 0 && ft.every(t => selected.has(t.id))} onChange={e => e.target.checked ? selectAll() : setSelected(new Set())} style={{ cursor: 'pointer', display: 'block' }} />
               </th>
-              {[['date', 'Date'], ['desc', 'Description'], ['payee', 'Payee'], ['cat', 'Account'], ['amt', 'Amount']].map(([col, label]) => (
-                <th key={col} onClick={() => toggleSort(col)} className={col === 'amt' ? 'tr' : undefined} style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}>
-                  {label}
-                  <span style={{ marginLeft: 4, fontSize: 9, opacity: sortCol === col ? 0.9 : 0.3 }}>{sortCol === col ? (sortDir === 'asc' ? '▲' : '▼') : '⇅'}</span>
-                </th>
-              ))}
-              {accountTab === null && <th>Bank</th>}
-              <th style={{ textAlign: 'center' }}>Status</th>
-              <th />
+              {isXero ? (
+                // 2-panel: minimal headers
+                <>
+                  <th style={{ fontWeight: 500, fontSize: 11, color: 'var(--stone)', borderRight: '0.5px solid var(--bd)', paddingLeft: 6 }}>
+                    Bank statement line
+                  </th>
+                  <th style={{ fontWeight: 500, fontSize: 11, color: 'var(--stone)', paddingLeft: 16 }}>
+                    Who / What / Why
+                  </th>
+                  <th />
+                </>
+              ) : (
+                // Compact: full column headers
+                <>
+                  {[['date', 'Date'], ['desc', 'Description'], ['payee', 'Payee'], ['cat', 'Account']].map(([col, label]) => (
+                    <th key={col} onClick={() => toggleSort(col)} style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}>
+                      {label}
+                      <span style={{ marginLeft: 4, fontSize: 9, opacity: sortCol === col ? 0.9 : 0.3 }}>{sortCol === col ? (sortDir === 'asc' ? '▲' : '▼') : '⇅'}</span>
+                    </th>
+                  ))}
+                  <th className="tr" onClick={() => toggleSort('amt')} style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap', color: 'var(--rd)' }}>
+                    Spent <span style={{ marginLeft: 3, fontSize: 9, opacity: sortCol === 'amt' ? 0.9 : 0.3 }}>{sortCol === 'amt' ? (sortDir === 'asc' ? '▲' : '▼') : '⇅'}</span>
+                  </th>
+                  <th className="tr" onClick={() => toggleSort('amt')} style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap', color: 'var(--gn)' }}>
+                    Received <span style={{ marginLeft: 3, fontSize: 9, opacity: 0.3 }}>⇅</span>
+                  </th>
+                  {showBalance && <th className="tr" style={{ color: 'var(--stone)', whiteSpace: 'nowrap' }}>Balance</th>}
+                  {accountTab === null && <th style={{ whiteSpace: 'nowrap' }}>Source</th>}
+                  <th style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>Status</th>
+                  <th />
+                </>
+              )}
             </tr>
           </thead>
           <tbody>
@@ -417,10 +559,14 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
                 saveDesc={saveDesc} handleCreateCat={handleCreateCat}
                 toggleSelect={toggleSelect} requestDelete={requestDelete} setDetailId={setDetailId}
                 org={org} PALETTE={PALETTE}
+                runningBal={showBalance ? runningBal[t.id] : null}
+                showBalance={showBalance}
+                compactView={compactView}
+                allocTab={allocTab}
               />
             ))}
             {ft.length === 0 && (
-              <tr><td colSpan={accountTab === null ? 9 : 8} style={{ textAlign: 'center', padding: 24, color: 'var(--stone)' }}>
+              <tr><td colSpan={(accountTab === null ? 1 : 0) + (showBalance ? 1 : 0) + 8} style={{ textAlign: 'center', padding: 24, color: 'var(--stone)' }}>
                 {accountTab === 'unlinked' ? 'No unlinked transactions — all transactions are assigned to a bank account.'
                   : accountTab && baseFt.length === 0 ? 'No transactions linked to this account.'
                   : 'No transactions match your filters.'}
@@ -428,6 +574,9 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
             )}
           </tbody>
         </table>
+        </div>
+          );
+        })()}
       </div>
 
       {/* Create-category modal */}

@@ -6,16 +6,35 @@ import React from 'react';
 import { useApp } from '../../context/AppContext';
 
 export function A4Paper({ title, subtitle, children, wide=false }) {
-  const{org}=useApp();const today=new Date().toLocaleDateString('en-AU',{day:'2-digit',month:'long',year:'numeric'});
-  return(<div style={{ maxWidth:wide?1060:760, margin:'0 auto', background:'#fff', border:'0.5px solid var(--bd2)', borderRadius:4, boxShadow:'0 2px 12px rgba(42,36,32,0.10)', fontFamily:'var(--font-sans)', overflow:'hidden' }}>
-    <div style={{ padding:'24px 32px 18px', borderBottom:'2px solid var(--ink)' }}>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start' }}>
-        <div><div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:4 }}><div style={{ width:14, height:14, background:'#BA7517', transform:'rotate(45deg)', borderRadius:2, flexShrink:0 }}/><span style={{ fontSize:16, fontWeight:600, color:'var(--ink)' }}>Ledger</span></div><div style={{ fontSize:11, color:'var(--stone)' }}>{org?.name||'Personal accounts'}</div></div>
-        <div style={{ textAlign:'right' }}><div style={{ fontSize:20, fontWeight:600, color:'var(--ink)', letterSpacing:'-0.01em' }}>{title}</div>{subtitle&&<div style={{ fontSize:12, color:'var(--stone)', marginTop:3 }}>{subtitle}</div>}<div style={{ fontSize:11, color:'var(--stone)', marginTop:3 }}>Prepared {today}</div></div>
+  const { org } = useApp();
+  const today = new Date().toLocaleDateString('en-AU', { day:'2-digit', month:'long', year:'numeric' });
+  const isDark = typeof document !== 'undefined' && document.documentElement.getAttribute('data-theme') === 'dark';
+  return (
+    <div className="a4-paper" style={{ maxWidth: wide ? 1060 : 760, margin: '0 auto', fontFamily: 'var(--font-sans)' }}>
+      <div style={{ padding: '24px 32px 18px', borderBottom: '2px solid var(--ink)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+          {/* Moniqr branding — uses the same icon as sidebar */}
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+              <img
+                src={isDark ? '/icon-dark.png' : '/icon-light.png'}
+                alt="Moniqr"
+                style={{ width: 20, height: 20, borderRadius: 5, flexShrink: 0 }}
+              />
+              <span style={{ fontSize: 16, fontWeight: 600, color: 'var(--ink)' }}>Moniqr</span>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--stone)' }}>{org?.name || 'Personal accounts'}</div>
+          </div>
+          <div style={{ textAlign: 'right' }}>
+            <div style={{ fontSize: 20, fontWeight: 600, color: 'var(--ink)', letterSpacing: '-0.01em' }}>{title}</div>
+            {subtitle && <div style={{ fontSize: 12, color: 'var(--stone)', marginTop: 3 }}>{subtitle}</div>}
+            <div style={{ fontSize: 11, color: 'var(--stone)', marginTop: 3 }}>Prepared {today}</div>
+          </div>
+        </div>
       </div>
+      <div>{children}</div>
     </div>
-    <div>{children}</div>
-  </div>);
+  );
 }
 
 export function StHead({children}){return<div style={{ padding:'7px 32px 3px', fontSize:10, fontWeight:600, color:'var(--stone)', letterSpacing:'0.07em', textTransform:'uppercase', background:'var(--sand)', borderBottom:'0.5px solid var(--bd)' }}>{children}</div>;}

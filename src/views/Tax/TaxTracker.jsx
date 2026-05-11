@@ -95,13 +95,13 @@ export function TaxTracker() {
   return (
     <div>
       {/* FY header */}
-      <div style={{ marginBottom: 14, padding: '10px 14px', background: '#FDFAF6', border: '0.5px solid var(--bd)', borderRadius: 'var(--rl)', display: 'flex', alignItems: 'center', gap: 12 }}>
+      <div style={{ marginBottom: 14, padding: '10px 14px', background: 'var(--bg-card)', border: '0.5px solid var(--bd)', borderRadius: 'var(--rl)', display: 'flex', alignItems: 'center', gap: 12 }}>
         <div style={{ flex: 1 }}>
           <div style={{ fontSize: 12, fontWeight: 500, marginBottom: 4 }}>
             {fyLabel(fyStart)} · {fyProgressPct}% complete
           </div>
           <div style={{ height: 6, background: 'var(--sand3)', borderRadius: 3 }}>
-            <div style={{ height: 6, borderRadius: 3, background: '#BA7517', width: `${fyProgressPct}%`, transition: 'width 0.4s' }} />
+            <div style={{ height: 6, borderRadius: 3, background: 'var(--a)', width: `${fyProgressPct}%`, transition: 'width 0.4s' }} />
           </div>
         </div>
         <div style={{ fontSize: 11, color: 'var(--stone)', whiteSpace: 'nowrap' }}>
@@ -259,7 +259,7 @@ function TaxLine({ label, value, muted, bold, green, warn }) {
       <span style={{
         fontVariantNumeric: 'tabular-nums',
         fontWeight: bold ? 500 : 400,
-        color: green ? '#3B6D11' : warn ? '#A32D2D' : 'var(--ink)',
+        color: green ? 'var(--gn)' : warn ? 'var(--rd)' : 'var(--ink)',
       }}>
         {value}
       </span>

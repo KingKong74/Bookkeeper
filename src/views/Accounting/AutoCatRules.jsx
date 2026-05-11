@@ -61,7 +61,7 @@ export function AutoCatRules() {
         );})}
         {rules.length===0&&<div style={{ padding:'20px 14px', fontSize:12, color:'var(--stone)' }}>No rules yet. Add one to start auto-categorising.</div>}
       </div>
-      <div style={{ padding:'10px 14px', fontSize:12, color:'var(--stone)', background:'#FDFAF6', border:'0.5px solid var(--bd)', borderRadius:'var(--rr)', marginTop:8 }}>Rules run in order — #1 wins. Keywords match anywhere in the description (case-insensitive). Drag rows to change priority.</div>
+      <div style={{ padding:'10px 14px', fontSize:12, color:'var(--stone)', background:'var(--bg-card)', border:'0.5px solid var(--bd)', borderRadius:'var(--rr)', marginTop:8 }}>Rules run in order — #1 wins. Keywords match anywhere in the description (case-insensitive). Drag rows to change priority.</div>
 
       {editing!==null&&(<div className="modal-bg" onClick={()=>setEditing(null)}><div className="modal" onClick={e=>e.stopPropagation()}>
         <div className="modal-head"><h3>{editing==='new'?'New rule':'Edit rule'}</h3><button className="btn-ghost" style={{ padding:0, fontSize:16 }} onClick={()=>setEditing(null)}>×</button></div>

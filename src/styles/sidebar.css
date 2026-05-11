@@ -1,0 +1,151 @@
+/* Sidebar navigation */
+/* ═══════════════════════════════════════════════════════════════
+   4. SIDEBAR
+   ═══════════════════════════════════════════════════════════════ */
+.sb {
+  width: 204px;
+  min-width: 204px;
+  background: #1A1714;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  transition: width 0.22s cubic-bezier(.4,0,.2,1), min-width 0.22s cubic-bezier(.4,0,.2,1);
+  overflow: hidden;
+}
+.sb--collapsed { width: 52px; min-width: 52px; }
+
+.sb-top {
+  padding: 14px 12px 10px;
+  border-bottom: 0.5px solid rgba(255,255,255,0.07);
+  position: relative;
+  flex-shrink: 0;
+}
+.sb-mark { display: flex; align-items: center; gap: 8px; overflow: hidden; }
+
+/* ── Logo button + flip animation ── */
+.sb-logo-btn {
+  background: none; border: none; padding: 0; cursor: pointer;
+  border-radius: 6px; line-height: 0; flex-shrink: 0;
+  transition: opacity 0.15s;
+  perspective: 200px;
+}
+.sb-logo-btn:hover { opacity: 0.8; }
+.sb-logo-btn--flip-out {
+  animation: sb-flip-out 0.13s ease-in forwards;
+}
+.sb-logo-btn--flip-in {
+  animation: sb-flip-in 0.14s ease-out forwards;
+}
+@keyframes sb-flip-out {
+  from { transform: rotateY(0deg); }
+  to   { transform: rotateY(90deg); }
+}
+@keyframes sb-flip-in {
+  from { transform: rotateY(-90deg); }
+  to   { transform: rotateY(0deg); }
+}
+.sb-logo { width: 22px; height: 22px; border-radius: 6px; display: block; }
+
+.sb-name { font-size: 13.5px; font-weight: 600; color: #F5F1EB; white-space: nowrap; }
+.sb-sub  {
+  font-size: 10.5px; color: rgba(245,241,235,0.35);
+  margin-top: 2px; padding-left: 30px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.sb-toggle {
+  position: absolute; top: 50%; right: 8px;
+  transform: translateY(-50%);
+  background: none; border: none; cursor: pointer;
+  color: rgba(245,241,235,0.3); padding: 4px;
+  border-radius: 4px; line-height: 0;
+  transition: color 0.1s, background 0.1s;
+}
+.sb-toggle:hover { color: rgba(245,241,235,0.8); background: rgba(255,255,255,0.06); }
+
+.sb-nav { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 8px 0; scrollbar-width: none; }
+.sb-nav::-webkit-scrollbar { display: none; }
+.sb-group { margin-bottom: 2px; }
+.sb-gl {
+  font-size: 9px; font-weight: 600;
+  color: rgba(245,241,235,0.25);
+  letter-spacing: 0.1em; text-transform: uppercase;
+  padding: 10px 14px 3px;
+  white-space: nowrap;
+}
+.sb-item {
+  display: flex; align-items: center; gap: 9px;
+  padding: 7px 14px; font-size: 12px;
+  cursor: pointer;
+  color: rgba(245,241,235,0.48);
+  transition: all 0.1s;
+  border-left: 2px solid transparent;
+  user-select: none;
+  white-space: nowrap;
+  position: relative;
+}
+.sb--collapsed .sb-item {
+  padding: 9px 0;
+  justify-content: center;
+  border-left: none;
+}
+.sb-item:hover  { color: rgba(245,241,235,0.85); background: rgba(255,255,255,0.05); }
+.sb-item.active { color: #FAEEDA; background: rgba(186,117,23,0.14); border-left-color: #BA7517; }
+.sb--collapsed .sb-item.active { border-left-color: transparent; border-right: 2px solid #BA7517; }
+.sb-item-label { flex: 1; }
+
+.sb-dot {
+  position: absolute; top: 6px; right: 8px;
+  width: 6px; height: 6px; border-radius: 50%;
+  background: #BA7517;
+}
+.sbadge {
+  margin-left: auto;
+  font-size: 10px; font-weight: 500;
+  background: rgba(186,117,23,0.35); color: #FAEEDA;
+  padding: 1px 6px; border-radius: 99px;
+}
+.sbadge.red { background: rgba(163,45,45,0.4); color: #FCDADA; }
+
+.sb-foot {
+  padding: 12px 14px;
+  border-top: 0.5px solid rgba(255,255,255,0.06);
+  flex-shrink: 0;
+}
+.sb-foot--collapsed { padding: 10px 0; display: flex; justify-content: center; }
+.sb-foot p    { font-size: 10.5px; color: rgba(245,241,235,0.28); line-height: 1.7; white-space: nowrap; }
+.sb-foot span { color: rgba(245,241,235,0.55); }
+.sb-signout {
+  background: none; border: none; cursor: pointer;
+  color: rgba(245,241,235,0.3); font-size: 11px;
+  font-family: var(--font-sans); padding: 0; transition: color 0.1s;
+}
+.sb-signout:hover { color: rgba(245,241,235,0.7); }
+.sb-signout-icon {
+  background: none; border: none; cursor: pointer;
+  color: rgba(245,241,235,0.3); padding: 6px; border-radius: 6px;
+  line-height: 0; transition: all 0.1s;
+}
+.sb-signout-icon:hover { color: rgba(245,241,235,0.8); background: rgba(255,255,255,0.06); }
+
+@media (max-width: 720px) {
+  .shell { position: relative; }
+  .sb {
+    position: fixed; left: 0; top: 0; bottom: 0; z-index: 200;
+    width: 52px; min-width: 52px;
+    box-shadow: 2px 0 12px rgba(0,0,0,0.18);
+  }
+  .sb--expanded-mobile { width: 204px; min-width: 204px; }
+  .main { margin-left: 52px; }
+}
+
+/* ── Auth screen logo — larger flip (88px icon) ── */
+/* Reuses sb-logo-btn--flip-out/in keyframes but overrides the perspective */
+.auth-logo-btn--flip-out {
+  animation: sb-flip-out 0.13s ease-in forwards;
+  transform-origin: center;
+}
+.auth-logo-btn--flip-in {
+  animation: sb-flip-in 0.14s ease-out forwards;
+  transform-origin: center;
+}

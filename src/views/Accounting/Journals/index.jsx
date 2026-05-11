@@ -2,9 +2,10 @@
  * views/Accounting/Journals/index.jsx
  * Journals page orchestrator — tabs, entry form, post/void.
  */
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useApp } from '../../../context/AppContext';
 import { createJournalEntry, updateJournalEntry } from '../../../lib/supabase';
+import { fetchJournals } from '../../../services/journalService';
 import { fmt } from '../../../utils/helpers';
 import { GeneralLedger } from './GeneralLedger';
 import { JournalList }   from './JournalList';
@@ -14,6 +15,14 @@ function newForm() { return { date:new Date().toISOString().slice(0,10), desc:''
 
 export function Journals() {
   const { cats, journals, setJournals, txns, org, toast } = useApp();
+
+  // Refresh journals every time this view is mounted (so changes from other tabs show)
+  // Refresh every time this view mounts — empty deps means "on every mount"
+  // org?.id dep was wrong: fires only when org changes, not when tab is clicked
+  useEffect(() => {
+    if (!org?.id) return;
+    fetchJournals(org.id).then(setJournals).catch(() => {});
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const [tab,     setTab]     = useState('ledger');
   const [form,    setForm]    = useState(newForm());
   const [editing, setEditing] = useState(null);

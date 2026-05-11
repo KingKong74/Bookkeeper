@@ -29,7 +29,7 @@ function Row({ label, sub, children }) {
 
 function Toggle({ value, onChange }) {
   return (
-    <div onClick={() => onChange(!value)} style={{ width:40, height:22, borderRadius:11, cursor:'pointer', transition:'background 0.2s', background:value?'#BA7517':'var(--sand3)', position:'relative' }}>
+    <div onClick={() => onChange(!value)} style={{ width:40, height:22, borderRadius:11, cursor:'pointer', transition:'background 0.2s', background:value?'var(--a)':'var(--sand3)', position:'relative' }}>
       <div style={{ width:18, height:18, borderRadius:'50%', background:'#fff', position:'absolute', top:2, left:value?20:2, transition:'left 0.2s', boxShadow:'0 1px 3px rgba(0,0,0,0.2)' }} />
     </div>
   );
@@ -74,24 +74,29 @@ export function Settings() {
 
       <Section title="Display">
         <Row label="Dark mode" sub="Switch to dark colour scheme">
-          <Toggle value={darkMode} onChange={v => { setDarkMode(v); savePref('dark_mode', v); document.documentElement.setAttribute('data-theme', v ? 'dark' : 'light'); }} />
+          <Toggle value={darkMode} onChange={v => {
+            setDarkMode(v);
+            savePref('dark_mode', v);
+            // Fire event so Sidebar can animate the logo flip
+            window.dispatchEvent(new CustomEvent('ledger:theme-toggle', { detail: { dark: v } }));
+          }} />
         </Row>
         <Row label="Show cents" sub="Display decimal places on whole dollar amounts"><Toggle value={showCents} onChange={v=>toggle('show_cents',setShowCents,v)} /></Row>
         <Row label="Compact rows" sub="Reduce row height in transaction table"><Toggle value={compactRows} onChange={v=>toggle('compact_rows',setCompactRows,v)} /></Row>
         <Row label="Currency">
-          <select value={currency} onChange={e=>{setCurrency(e.target.value);savePref('currency',e.target.value);}} style={{ padding:'4px 8px', fontSize:12, border:'0.5px solid var(--bd2)', borderRadius:'var(--rr)', background:'#FDFAF6', fontFamily:'var(--font-sans)' }}>
+          <select value={currency} onChange={e=>{setCurrency(e.target.value);savePref('currency',e.target.value);}} style={{ padding:'4px 8px', fontSize:12, border:'0.5px solid var(--bd2)', borderRadius:'var(--rr)', background:'var(--bg-card)', fontFamily:'var(--font-sans)' }}>
             {['AUD','USD','GBP','EUR','NZD'].map(c=><option key={c} value={c}>{c}</option>)}
           </select>
         </Row>
         <Row label="Date display format">
-          <select value={dateFormat} onChange={e=>{setDateFormat(e.target.value);savePref('date_format',e.target.value);}} style={{ padding:'4px 8px', fontSize:12, border:'0.5px solid var(--bd2)', borderRadius:'var(--rr)', background:'#FDFAF6', fontFamily:'var(--font-sans)' }}>
+          <select value={dateFormat} onChange={e=>{setDateFormat(e.target.value);savePref('date_format',e.target.value);}} style={{ padding:'4px 8px', fontSize:12, border:'0.5px solid var(--bd2)', borderRadius:'var(--rr)', background:'var(--bg-card)', fontFamily:'var(--font-sans)' }}>
             <option value="dd/mm/yyyy">DD/MM/YYYY</option>
             <option value="mm/dd/yyyy">MM/DD/YYYY</option>
             <option value="yyyy-mm-dd">YYYY-MM-DD (ISO)</option>
           </select>
         </Row>
         <Row label="Financial year start">
-          <select value={fyCutoff} onChange={e=>{setFyCutoff(e.target.value);savePref('fy_cutoff',e.target.value);}} style={{ padding:'4px 8px', fontSize:12, border:'0.5px solid var(--bd2)', borderRadius:'var(--rr)', background:'#FDFAF6', fontFamily:'var(--font-sans)' }}>
+          <select value={fyCutoff} onChange={e=>{setFyCutoff(e.target.value);savePref('fy_cutoff',e.target.value);}} style={{ padding:'4px 8px', fontSize:12, border:'0.5px solid var(--bd2)', borderRadius:'var(--rr)', background:'var(--bg-card)', fontFamily:'var(--font-sans)' }}>
             <option value="july">1 July — Australian FY</option>
             <option value="january">1 January — Calendar year</option>
             <option value="april">1 April — UK FY</option>
@@ -120,7 +125,7 @@ export function Settings() {
           <div style={{ padding:'0 16px 16px' }}>
             <div style={{ display:'flex', gap:8, marginBottom:10 }}>
               <input placeholder="Search hints…" value={hintSearch} onChange={e=>setHintSearch(e.target.value)}
-                style={{ flex:1, padding:'5px 10px', fontSize:12, border:'0.5px solid var(--bd2)', borderRadius:'var(--rr)', background:'#FDFAF6', fontFamily:'var(--font-sans)' }} />
+                style={{ flex:1, padding:'5px 10px', fontSize:12, border:'0.5px solid var(--bd2)', borderRadius:'var(--rr)', background:'var(--bg-card)', fontFamily:'var(--font-sans)' }} />
               <button className="btn btn-a btn-sm" onClick={()=>setEditingHint({keyword:'',hint:'',cat_type:'expense',isNew:true})}>+ Add hint</button>
             </div>
             {editingHint && (
@@ -130,12 +135,12 @@ export function Settings() {
                     <div key={field}>
                       <div style={{ fontSize:10, fontWeight:500, color:'var(--stone)', marginBottom:3, textTransform:'uppercase' }}>{lbl}</div>
                       <input value={editingHint[field]} onChange={e=>setEditingHint(h=>({...h,[field]:e.target.value}))}
-                        placeholder={ph} style={{ width:'100%', boxSizing:'border-box', padding:'5px 8px', fontSize:12.5, border:'0.5px solid var(--bd2)', borderRadius:'var(--rr)', background:'#FDFAF6', fontFamily:'var(--font-sans)' }} />
+                        placeholder={ph} style={{ width:'100%', boxSizing:'border-box', padding:'5px 8px', fontSize:12.5, border:'0.5px solid var(--bd2)', borderRadius:'var(--rr)', background:'var(--bg-card)', fontFamily:'var(--font-sans)' }} />
                     </div>
                   ))}
                   <div style={{ display:'flex', gap:5, alignItems:'flex-end' }}>
                     <select value={editingHint.cat_type} onChange={e=>setEditingHint(h=>({...h,cat_type:e.target.value}))}
-                      style={{ padding:'5px 8px', fontSize:12, border:'0.5px solid var(--bd2)', borderRadius:'var(--rr)', background:'#FDFAF6', fontFamily:'var(--font-sans)' }}>
+                      style={{ padding:'5px 8px', fontSize:12, border:'0.5px solid var(--bd2)', borderRadius:'var(--rr)', background:'var(--bg-card)', fontFamily:'var(--font-sans)' }}>
                       {['expense','income','asset','liability','equity'].map(t=><option key={t} value={t}>{t}</option>)}
                     </select>
                     <button className="btn btn-a btn-sm" disabled={savingHint||!editingHint.keyword.trim()||!editingHint.hint.trim()}
@@ -158,7 +163,7 @@ export function Settings() {
                 .filter(h => !hintSearch || h.keyword.includes(hintSearch.toLowerCase()) || h.hint.includes(hintSearch.toLowerCase()))
                 .sort((a,b) => a.keyword.localeCompare(b.keyword))
                 .map(h => (
-                  <div key={h.id} style={{ display:'flex', alignItems:'center', padding:'6px 12px', borderBottom:'0.5px solid var(--bd)', background:h.org_id?'rgba(186,117,23,0.04)':'#FDFAF6', fontSize:12 }}>
+                  <div key={h.id} style={{ display:'flex', alignItems:'center', padding:'6px 12px', borderBottom:'0.5px solid var(--bd)', background:h.org_id?'rgba(186,117,23,0.04)':'var(--bg-card)', fontSize:12 }}>
                     <span style={{ flex:'0 0 150px', fontWeight:500 }}>{h.keyword}</span>
                     <span style={{ flex:1, color:'var(--stone)' }}>{h.hint}</span>
                     <span style={{ fontSize:10, padding:'1px 6px', borderRadius:99, marginRight:8, background:h.org_id?'var(--al)':'var(--sand2)', color:h.org_id?'var(--a2)':'var(--stone)' }}>{h.org_id?'custom':'built-in'}</span>

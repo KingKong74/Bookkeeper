@@ -99,7 +99,7 @@ export function InlineCatPicker({ txnId, currentCatId, cats, catMap, onSelect, o
   let globalIdx = 0;
 
   return (
-    <div ref={containerRef} style={{ position:'relative' }} onClick={e => e.stopPropagation()}>
+    <div ref={containerRef} style={{ position:'relative', minWidth:0, overflow:'hidden' }} onClick={e => e.stopPropagation()}>
       {/* Always-visible input */}
       <div style={{ display:'flex', alignItems:'center', gap:4 }}>
         {(current || (suggestion && !open)) && (
@@ -115,7 +115,7 @@ export function InlineCatPicker({ txnId, currentCatId, cats, catMap, onSelect, o
           style={{
             width:'100%', minWidth:0, padding:'2px 6px', fontSize:11.5,
             border:'0.5px solid transparent', borderRadius:'var(--rr)',
-            background: '#FDFAF6',
+            background: 'var(--bg-card)',
             color: current ? 'var(--ink)' : suggestion && !open ? suggestion.col : 'var(--stone)',
             fontStyle: isSuggestion ? 'italic' : 'normal',
             fontFamily:'var(--font-sans)', cursor:'text',
@@ -147,14 +147,14 @@ export function InlineCatPicker({ txnId, currentCatId, cats, catMap, onSelect, o
           position:'fixed',
           left: containerRef.current ? Math.min(containerRef.current.getBoundingClientRect().left, window.innerWidth - 230) : 0,
           top:  containerRef.current ? containerRef.current.getBoundingClientRect().bottom + 2 : 0,
-          zIndex:700, background:'#FDFAF6', border:'0.5px solid var(--bd2)',
+          zIndex:700, background:'var(--bg-card)', border:'0.5px solid var(--bd2)',
           borderRadius:'var(--rl)', minWidth:220, maxHeight:280, overflowY:'auto',
           boxShadow:'0 6px 20px rgba(42,36,32,0.14)',
         }}>
-          <div style={{ position:'sticky', top:0, background:'#FDFAF6', borderBottom:'0.5px solid var(--bd)', zIndex:1 }}>
+          <div style={{ position:'sticky', top:0, background:'var(--bg-card)', borderBottom:'0.5px solid var(--bd)', zIndex:1 }}>
             <input autoFocus value={q} onChange={e => setQ(e.target.value)} onKeyDown={handleKey}
               placeholder="Search categories…"
-              style={{ width:'100%', boxSizing:'border-box', padding:'7px 10px', fontSize:12.5, border:'none', background:'#FDFAF6', outline:'none', fontFamily:'var(--font-sans)' }} />
+              style={{ width:'100%', boxSizing:'border-box', padding:'7px 10px', fontSize:12.5, border:'none', background:'var(--bg-card)', outline:'none', fontFamily:'var(--font-sans)' }} />
           </div>
           {current && (
             <div style={{ padding:'5px 10px', fontSize:11.5, color:'var(--stone)', borderBottom:'0.5px solid var(--bd)', cursor:'pointer' }}

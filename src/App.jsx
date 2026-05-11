@@ -1,14 +1,11 @@
 /**
  * App.jsx
- * -------
- * Root component. Handles:
- *   1. Auth gating — shows AuthScreen if no session
- *   2. Loading state — shows spinner while data loads
- *   3. Shell layout — Sidebar + main content area
- *   4. View routing — maps view keys to components
+ * Root component: auth gate, shell layout, view routing.
+ * Tab switching is instant — no background refresh on navigation.
+ * Data stays fresh from the initial load + optimistic UI updates in each view.
  */
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useTransition, Suspense } from 'react';
 import { useApp } from './context/AppContext';
 import { Sidebar } from './components/layout/Sidebar';
 import { Toast } from './components/ui/index';
@@ -42,53 +39,46 @@ export default function App() {
     dateFrom, dateTo, fyMode,
     toastMsg, toast,
     user, org,
-    refreshData,
   } = useApp();
 
-  // Apply saved theme immediately on mount — before any render
+  // Apply saved theme immediately on mount
   useEffect(() => {
     const dark = localStorage.getItem('pref_dark_mode') === 'true';
     document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
   }, []);
 
   const [view, setView] = useState('dashboard');
+  const [sandboxParsedFiles, setSandboxParsedFiles] = useState(null); // pre-parsed files from sandbox/bank sync
   const [defaultAccountTab, setDefaultAccountTab] = useState(null);
+  const [isPending, startTransition] = useTransition();
 
-  // Subtle background refresh on tab switch — keeps data fresh without a full reload
-  const prevView = useRef(view);
-  useEffect(() => {
-    if (prevView.current !== view && org && refreshData) {
-      refreshData();
-    }
-    prevView.current = view;
-  }, [view]); // eslint-disable-line
+  function navigateTo(nextView) {
+    startTransition(() => setView(nextView));
+  }
 
   if (authLoading) return <Splash text="Loading…" />;
   if (!session)    return <AuthScreen />;
   if (dataLoading) return <Splash text="Loading your data…" />;
   if (error)       return <ErrorScreen message={error} />;
 
-  // Adapt DB shape for helpers (desc vs description, category_id vs cat)
-  const adapted = (transactions || []).map(t => ({
-    ...t, cat: t.category_id, desc: t.description,
-  }));
-  const adaptedRules = (rules || []).map(r => ({
-    ...r, catId: r.category_id,
-  }));
-
-  const ft          = filterByDateRange(adapted, dateFrom, dateTo);
-  const unallocated = ft.filter(t => !t.cat).length;
-  const unlinked    = ft.filter(t => !t.account_id).length;
-  const suggestions = runAutoCatRules(adapted, adaptedRules).length;
-  const periodLabel = typeof fyMode === 'number' ? fyLabel(fyMode) : dateRangeLabel(dateFrom, dateTo);
+  const adapted      = (transactions || []).map(t => ({ ...t, cat: t.category_id, desc: t.description }));
+  const adaptedRules = (rules || []).map(r => ({ ...r, catId: r.category_id }));
+  const ft           = filterByDateRange(adapted, dateFrom, dateTo);
+  const unallocated  = ft.filter(t => !t.cat).length;
+  const unlinked     = ft.filter(t => !t.account_id).length;
+  const suggestions  = runAutoCatRules(adapted, adaptedRules).length;
+  const periodLabel  = typeof fyMode === 'number' ? fyLabel(fyMode) : dateRangeLabel(dateFrom, dateTo);
 
   function renderView() {
     switch (view) {
-      case 'dashboard':    return <Dashboard       onNavigate={setView} />;
+      case 'dashboard':    return <Dashboard       onNavigate={navigateTo} />;
       case 'transactions': return <Transactions defaultAccountTab={defaultAccountTab} onClearDefaultTab={() => setDefaultAccountTab(null)} />;
-      case 'approve':      return <AutoCategorise  onNavigate={setView} />;
-      case 'import':       return <ImportStatement onNavigate={setView} />;
-      case 'accounts':     return <BankAccounts onNavigate={(v, acctId) => { setDefaultAccountTab(acctId || null); setView(v); }} />;
+      case 'approve':      return <AutoCategorise  onNavigate={navigateTo} />;
+      case 'import':       return <ImportStatement onNavigate={navigateTo} initialParsedFiles={sandboxParsedFiles} onClearInitial={() => setSandboxParsedFiles(null)} />;
+      case 'accounts':     return <BankAccounts
+        onNavigate={(v, acctId) => { setDefaultAccountTab(acctId || null); startTransition(() => setView(v)); }}
+        onSandboxReview={pf => { setSandboxParsedFiles(pf); startTransition(() => setView('import')); }}
+      />;
       case 'reconcile':    return <Reconciliation />;
       case 'journals':     return <Journals />;
       case 'coa':          return <ChartOfAccounts />;
@@ -102,7 +92,7 @@ export default function App() {
       case 'pl':           return <ProfitAndLoss />;
       case 'balance':      return <BalanceSheet />;
       case 'payees':       return <PayeeReport />;
-      default:             return <Dashboard onNavigate={setView} />;
+      default:             return <Dashboard onNavigate={navigateTo} />;
     }
   }
 
@@ -115,7 +105,7 @@ export default function App() {
     <div className="shell">
       <Sidebar
         currentView={view}
-        onNavigate={setView}
+        onNavigate={navigateTo}
         badges={{ ua: unallocated, approve: suggestions, unlinked }}
         user={user}
         orgName={org?.name}
@@ -133,11 +123,61 @@ export default function App() {
                 Ask Claude ↗
               </button>
             )}
+            <ProfileCircle user={user} />
           </div>
         </div>
-        <div className="content">{renderView()}</div>
+        <div className="content" style={{ position: 'relative' }}>
+          {isPending && (
+            <div style={{
+              position: 'absolute', inset: 0, zIndex: 50,
+              background: 'var(--sand)', opacity: 0.65,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}>
+              <ViewSpinner />
+            </div>
+          )}
+          {renderView()}
+        </div>
       </div>
       <Toast message={toastMsg} />
+    </div>
+  );
+}
+
+function ProfileCircle({ user }) {
+  const initials = user?.email ? user.email.slice(0, 2).toUpperCase() : '?';
+  const hue = user?.email
+    ? user.email.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0) % 360
+    : 200;
+  return (
+    <div
+      title={user?.email || 'Profile'}
+      style={{
+        width: 30, height: 30, borderRadius: '50%',
+        background: `hsl(${hue},42%,44%)`,
+        color: '#fff', fontSize: 11, fontWeight: 600,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        flexShrink: 0, userSelect: 'none', letterSpacing: '0.02em',
+        cursor: 'default',
+      }}
+    >
+      {initials}
+    </div>
+  );
+}
+
+function ViewSpinner() {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
+      <div style={{
+        width: 20, height: 20,
+        border: '2px solid var(--bd2)',
+        borderTopColor: 'var(--a)',
+        borderRadius: '50%',
+        animation: 'spin 0.7s linear infinite',
+      }} />
+      <span style={{ fontSize: 11, color: 'var(--stone)' }}>Loading…</span>
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </div>
   );
 }

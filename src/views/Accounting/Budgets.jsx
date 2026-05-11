@@ -38,11 +38,11 @@ export function Budgets() {
           <div key={c.id} style={{ display:'grid', gridTemplateColumns:'1fr 90px 80px 55px', borderBottom:'0.5px solid var(--bd)', alignItems:'center' }}>
             <span style={{ padding:'7px 10px', display:'flex', flexDirection:'column', gap:3 }}>
               <span style={{ display:'flex', alignItems:'center', gap:6 }}><span className="cdot" style={{ background:c.col }}/>{c.l}</span>
-              <div style={{ height:4, background:'var(--sand3)', borderRadius:2, width:'90%' }}><div style={{ height:4, borderRadius:2, background:over?'#A32D2D':c.col, width:`${Math.min(pct,100)}%` }}/></div>
+              <div style={{ height:4, background:'var(--sand3)', borderRadius:2, width:'90%' }}><div style={{ height:4, borderRadius:2, background:over?'var(--rd)':c.col, width:`${Math.min(pct,100)}%` }}/></div>
             </span>
-            <span style={{ padding:'7px 10px', textAlign:'right' }}><input type="number" value={b} onChange={e=>updateBudget(c.id,e.target.value)} style={{ width:68, padding:'3px 6px', fontSize:12, border:'0.5px solid var(--bd2)', borderRadius:'var(--rr)', background:'#FDFAF6', textAlign:'right', fontFamily:'var(--font-sans)' }}/></span>
+            <span style={{ padding:'7px 10px', textAlign:'right' }}><input type="number" value={b} onChange={e=>updateBudget(c.id,e.target.value)} style={{ width:68, padding:'3px 6px', fontSize:12, border:'0.5px solid var(--bd2)', borderRadius:'var(--rr)', background:'var(--bg-card)', textAlign:'right', fontFamily:'var(--font-sans)' }}/></span>
             <span style={{ padding:'7px 10px', textAlign:'right', fontSize:12, fontVariantNumeric:'tabular-nums' }} className={over?'vn':''}>{a>0?fmt(a):'—'}</span>
-            <span style={{ padding:'7px 10px', textAlign:'right', fontSize:12, fontWeight:500, color:pct>100?'#A32D2D':pct>80?'#BA7517':'#3B6D11' }}>{b>0?`${pct}%`:'—'}</span>
+            <span style={{ padding:'7px 10px', textAlign:'right', fontSize:12, fontWeight:500, color:pct>100?'var(--rd)':pct>80?'var(--a)':'var(--gn)' }}>{b>0?`${pct}%`:'—'}</span>
           </div>
         );})}
       </div>

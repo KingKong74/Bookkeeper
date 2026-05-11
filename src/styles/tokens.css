@@ -1,0 +1,89 @@
+/* Design tokens, reset, shell layout */
+/**
+ * styles/main.css
+ * ---------------
+ * All application styles in one file, organised into clear sections.
+ *
+ * Sections:
+ *   1. Design tokens (CSS variables)
+ *   2. Reset & base
+ *   3. Shell layout
+ *   4. Sidebar
+ *   5. Main panel & topbar
+ *   6. Reusable components (buttons, cards, pills, modals, etc.)
+ *   7. View-specific styles (metrics, tables, statements, etc.)
+ */
+
+/* ═══════════════════════════════════════════════════════════════
+   1. DESIGN TOKENS
+   ═══════════════════════════════════════════════════════════════ */
+:root {
+  /* Warm neutrals — light mode */
+  --sand:  #F5F1EB;   /* page bg */
+  --sand2: #EDE8E0;   /* card / elevated bg */
+  --sand3: #E0D9CE;   /* input bg */
+  --sand4: #C8BFB0;   /* subtle fills */
+
+  /* Text */
+  --stone:  #7A7168;  /* muted labels */
+  --stone2: #4A433C;  /* secondary text */
+  --ink:    #2A2420;  /* primary text */
+
+  /* Amber accent */
+  --a:  #BA7517;
+  --al: #FAEEDA;
+  --ab: #FDF6EC;
+  --a2: #854F0B;
+
+  /* Semantic colours */
+  --gn:  #3B6D11;
+  --gnb: #EAF3DE;
+  --rd:  #A32D2D;
+  --rdb: #FCEBEB;
+
+  /* Borders */
+  --bd:  rgba(100, 90, 80, 0.13);
+  --bd2: rgba(100, 90, 80, 0.25);
+
+  /* Radii */
+  --rr: 8px;
+  --rl: 12px;
+
+  /* Typography */
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+
+  /* Semantic background tokens */
+  --bg-card:     #FDFAF6;
+  --bg-row-done: rgba(186, 117, 23, 0.06);
+  --bg-row-todo: #FDFAF6;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   2. RESET & BASE
+   ═══════════════════════════════════════════════════════════════ */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body, #root {
+  height: 100%;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--sand);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   3. SHELL LAYOUT
+   ═══════════════════════════════════════════════════════════════ */
+.shell {
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   DARK MODE — deep indigo-charcoal theme
+   Applied via data-theme="dark" on <html> element.
+   Accent: electric indigo/violet instead of amber.
+   Backgrounds: near-black with blue-tinted charcoal layers.
+═══════════════════════════════════════════════════════════════ */

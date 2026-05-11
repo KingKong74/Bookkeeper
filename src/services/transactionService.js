@@ -13,8 +13,11 @@ const PAGE = 1000;
 export async function fetchTransactions(orgId, from, to) {
   const all = [];
   let offset = 0;
+  // Try with pending_import filter first; fall back without it if column doesn't exist yet
+  // (migration 016 may not have been applied)
+  let usePendingFilter = true;
   while (true) {
-    const { data, error } = await supabase
+    let q = supabase
       .from('transactions')
       .select(`*, accounts(id, label, colour, type, account_group), payees(id, name, colour)`)
       .eq('org_id', orgId)
@@ -22,7 +25,16 @@ export async function fetchTransactions(orgId, from, to) {
       .lte('date', to)
       .order('date', { ascending: false })
       .range(offset, offset + PAGE - 1);
-    if (error) throw error;
+    if (usePendingFilter) q = q.eq('pending_import', false);
+    const { data, error } = await q;
+    if (error) {
+      // If error is about missing column, retry without the filter
+      if (usePendingFilter && (error.message?.includes('pending_import') || error.code === '42703' || error.code === 'PGRST204')) {
+        usePendingFilter = false;
+        continue; // retry this page without the filter
+      }
+      throw error;
+    }
     if (!data?.length) break;
     all.push(...data);
     if (data.length < PAGE) break;

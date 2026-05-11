@@ -1,0 +1,22 @@
+/* Main layout: topbar, content */
+/* ═══════════════════════════════════════════════════════════════
+   5. MAIN PANEL & TOPBAR
+   ═══════════════════════════════════════════════════════════════ */
+.main {
+  flex: 1; display: flex; flex-direction: column;
+  background: var(--sand); overflow: hidden;
+}
+.topbar {
+  height: 50px; padding: 0 18px;
+  display: flex; align-items: center; justify-content: space-between;
+  border-bottom: 0.5px solid var(--bd); background: var(--bg-card);
+  flex-shrink: 0;
+}
+.tb-left  { display: flex; align-items: center; gap: 10px; }
+.tb-left h2 { font-size: 14px; font-weight: 500; }
+.tb-pill  {
+  font-size: 11px; background: var(--al); color: var(--a2);
+  padding: 2px 9px; border-radius: 99px; font-weight: 500;
+}
+.tb-right { display: flex; gap: 7px; align-items: center; }
+.content  { flex: 1; overflow-y: auto; padding: 16px 18px; }

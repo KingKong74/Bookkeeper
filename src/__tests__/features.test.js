@@ -34,7 +34,7 @@ describe('Transactions', () => {
   it('status column',          () => expect(has(f,"status==='done'")).toBe(true));
   it('toast delete',           () => expect(has(f,'DeleteToast')).toBe(true));
   it('2.5s fade',              () => expect(has(f,'2500')).toBe(true));
-  it('amber row bg',           () => expect(has(f,'#FAF3E4')).toBe(true));
+  it('amber row bg',           () => expect(has(f,'txn-row--done') || has(f,'#FAF3E4')).toBe(true));
 });
 
 describe('TransactionModal', () => {
@@ -48,7 +48,15 @@ describe('TransactionModal', () => {
 });
 
 describe('ImportStatement', () => {
-  const f = ['views/Banking/ImportStatement.jsx'];
+  const f = [
+    'views/Banking/ImportStatement.jsx',
+    'views/Banking/ImportStatement/index.jsx',
+    'views/Banking/ImportStatement/ImportUpload.jsx',
+    'views/Banking/ImportStatement/ImportReviewTable.jsx',
+    'views/Banking/ImportStatement/ImportRuleBuilderModal.jsx',
+    'views/Banking/ImportStatement/CreateAccountModal.jsx',
+    'views/Banking/ImportStatement/importHelpers.js',
+  ];
   it('account selector',       () => expect(has(f,'selectedAccount')).toBe(true));
   it('PDF parsing',            () => expect(has(f,'parsePDF')).toBe(true));
   it('CSV parsing',            () => expect(has(f,'parseCSVText')).toBe(true));
@@ -56,8 +64,8 @@ describe('ImportStatement', () => {
   it('multi-file input',       () => expect(has(f,'multiple')).toBe(true));
   it('parsedFiles state',      () => expect(has(f,'parsedFiles')).toBe(true));
   it('per-file section headers',() => expect(has(f,'_fileIdx')).toBe(true));
-  it('add more files button',  () => expect(has(f,'Add more files')).toBe(true));
-  it('remove individual file', () => expect(has(f,'keysToRemove')).toBe(true));
+  it('add more files button',  () => expect(has(f,'Add more') || has(f,'Add more files')).toBe(true));
+  it('remove individual file', () => expect(has(f,'removeFile') || has(f,'keysToRemove')).toBe(true));
   it('rule builder modal',     () => expect(has(f,'showRuleBuilder')).toBe(true));
   it('rule builder forms',     () => expect(has(f,'ruleBuilderSeed') || has(f,'ruleBuilderForms')).toBe(true));
   it('review & add rules btn', () => expect(has(f,'Review & add rules')).toBe(true));
@@ -145,7 +153,7 @@ describe('ChartOfAccounts - drill edit', () => {
 
 describe('Transactions - opaque inputs', () => {
   const f = ['views/Banking/Transactions/index.jsx','views/Banking/Transactions/TransactionFilters.jsx','views/Banking/Transactions/TransactionRow.jsx','views/Banking/Transactions/InlineCatPicker.jsx','views/Banking/Transactions/InlinePayeePicker.jsx','views/Banking/Transactions/InlineDescEditor.jsx','views/Banking/Transactions/DeleteToast.jsx','views/Banking/Transactions/MakeRulePrompt.jsx','views/Banking/Transactions/transactionHelpers.js'];
-  it('cat input fully opaque',             () => expect(has(f,"background: '#FDFAF6'")).toBe(true));
+  it('cat input fully opaque',             () => expect(has(f,"background: 'var(--bg-card)'") || has(f,"background:'var(--bg-card)'")).toBe(true));
   it('apply button soft green',            () => expect(has(f,"background:'var(--gnb)'"  )).toBe(true));
   it('smart keyword extraction',           () => expect(has(f,'meaningful')).toBe(true));
 });
@@ -207,7 +215,15 @@ describe('Transactions - search inputs opaque', () => {
 });
 
 describe('ImportStatement — loading + redirect', () => {
-  const f = ['views/Banking/ImportStatement.jsx'];
+  const f = [
+    'views/Banking/ImportStatement.jsx',
+    'views/Banking/ImportStatement/index.jsx',
+    'views/Banking/ImportStatement/ImportUpload.jsx',
+    'views/Banking/ImportStatement/ImportReviewTable.jsx',
+    'views/Banking/ImportStatement/ImportRuleBuilderModal.jsx',
+    'views/Banking/ImportStatement/CreateAccountModal.jsx',
+    'views/Banking/ImportStatement/importHelpers.js',
+  ];
   it('loading overlay exists',           () => expect(has(f,'loadingMsg')).toBe(true));
   it('loading spinner animation',        () => expect(has(f,'ledger-spin')).toBe(true));
   it('always redirects after import',    () => expect(has(f,"onNavigate('transactions')")).toBe(true));

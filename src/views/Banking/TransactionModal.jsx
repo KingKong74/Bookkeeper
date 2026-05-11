@@ -50,7 +50,7 @@ function SearchSelect({ label, value, onChange, options, placeholder = 'Search�
         style={{
           display:'flex', alignItems:'center', justifyContent:'space-between',
           padding:'6px 9px', fontSize:12.5, border:'0.5px solid var(--bd2)',
-          borderRadius:'var(--rr)', background:'#FDFAF6', cursor:'pointer',
+          borderRadius:'var(--rr)', background:'var(--bg-card)', cursor:'pointer',
           userSelect:'none', color: selected ? 'var(--ink)' : 'var(--stone)',
         }}
       >
@@ -63,7 +63,7 @@ function SearchSelect({ label, value, onChange, options, placeholder = 'Search�
 
       {open && (
         <div style={{
-          position:'absolute', zIndex:800, background:'#FDFAF6',
+          position:'absolute', zIndex:800, background:'var(--bg-card)',
           border:'0.5px solid var(--bd2)', borderRadius:'var(--rl)',
           boxShadow:'0 6px 20px rgba(42,36,32,0.14)',
           width:'100%', maxHeight:260, display:'flex', flexDirection:'column',
@@ -167,7 +167,7 @@ function PayeeField({ value, onChange, payees, onAddPayee, PALETTE }) {
           placeholder="Search or type payee…"
           onFocus={() => { setOpen(true); setQ(value || ''); }}
           onChange={e => { setQ(e.target.value); onChange(e.target.value); setOpen(true); }}
-          style={{ width:'100%', padding:'6px 9px', fontSize:12.5, border:'0.5px solid var(--bd2)', borderRadius:'var(--rr)', background:'#FDFAF6', color:'var(--ink)', fontFamily:'var(--font-sans)' }}
+          style={{ width:'100%', padding:'6px 9px', fontSize:12.5, border:'0.5px solid var(--bd2)', borderRadius:'var(--rr)', background:'var(--bg-card)', color:'var(--ink)', fontFamily:'var(--font-sans)' }}
         />
         {value && (
           <button onClick={() => { onChange(''); setQ(''); }}
@@ -176,7 +176,7 @@ function PayeeField({ value, onChange, payees, onAddPayee, PALETTE }) {
       </div>
 
       {open && (filtered.length > 0 || showNewBtn) && (
-        <div style={{ position:'absolute', zIndex:800, background:'#FDFAF6', border:'0.5px solid var(--bd2)', borderRadius:'var(--rl)', boxShadow:'0 6px 20px rgba(42,36,32,0.14)', width:'100%', maxHeight:200, overflowY:'auto', marginTop:2 }}>
+        <div style={{ position:'absolute', zIndex:800, background:'var(--bg-card)', border:'0.5px solid var(--bd2)', borderRadius:'var(--rl)', boxShadow:'0 6px 20px rgba(42,36,32,0.14)', width:'100%', maxHeight:200, overflowY:'auto', marginTop:2 }}>
           {filtered.map(p => (
             <div key={p.id} onMouseDown={() => pick(p.name)}
               style={{ padding:'7px 12px', fontSize:12.5, cursor:'pointer', display:'flex', alignItems:'center', gap:8, fontWeight: p.name===value?500:400 }}
@@ -598,7 +598,7 @@ export function TransactionModal({ txnId, onClose }) {
             ) : (
               <div style={{ padding:'0 16px 16px' }}>
                 {files.map(f => (
-                  <div key={f.id} style={{ display:'flex', alignItems:'center', gap:10, padding:'8px 12px', border:'0.5px solid var(--bd)', borderRadius:'var(--rr)', marginBottom:6, background:'#FDFAF6' }}>
+                  <div key={f.id} style={{ display:'flex', alignItems:'center', gap:10, padding:'8px 12px', border:'0.5px solid var(--bd)', borderRadius:'var(--rr)', marginBottom:6, background:'var(--bg-card)' }}>
                     <span style={{ fontSize:20, flexShrink:0 }}>
                       {f.mime_type?.includes('pdf') ? '📄' : f.mime_type?.includes('image') ? '🖼' : '📎'}
                     </span>
@@ -742,7 +742,7 @@ export function CategoryDropdown({ pos, onSelect, onUnallocate, onClose, current
       onMouseDown={e => e.stopPropagation()}
     >
       {/* Search box — sticky flush to top, no gap */}
-      <div style={{ position:'sticky', top:0, background:'#FDFAF6', borderBottom:'0.5px solid var(--bd)', zIndex:1 }}>
+      <div style={{ position:'sticky', top:0, background:'var(--bg-card)', borderBottom:'0.5px solid var(--bd)', zIndex:1 }}>
         <input
           ref={inputRef}
           className="dd-search"
@@ -853,7 +853,7 @@ export function PayeeDropdown({ pos, onSelect, onClose, onRemove }) {
       onMouseDown={e => e.stopPropagation()}
     >
       {/* Search / create box — sticky flush to top */}
-      <div style={{ position:'sticky', top:0, background:'#FDFAF6', borderBottom:'0.5px solid var(--bd)', zIndex:1 }}>
+      <div style={{ position:'sticky', top:0, background:'var(--bg-card)', borderBottom:'0.5px solid var(--bd)', zIndex:1 }}>
         <input
           ref={inputRef}
           className="dd-search"

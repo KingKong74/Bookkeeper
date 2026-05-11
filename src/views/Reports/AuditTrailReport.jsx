@@ -10,12 +10,12 @@ import { useApp } from '../../context/AppContext';
 import { getOrgAuditLog, describeChange, formatAuditDate } from '../../lib/audit';
 
 const ACTION_COLOURS = {
-  created:          { bg:'#EAF3DE', color:'#27500A', icon:'✚' },
-  imported:         { bg:'#E6F1FB', color:'#0C447C', icon:'↓' },
+  created:          { bg:'var(--gnb)', color:'var(--gn)', icon:'✚' },
+  imported:         { bg:'rgba(99,102,241,0.12)', color:'var(--a2)', icon:'↓' },
   updated:          { bg:'var(--al)', color:'var(--a2)', icon:'✎' },
   deleted:          { bg:'var(--rdb)', color:'var(--rd)', icon:'🗑' },
   category_changed: { bg:'var(--al)', color:'var(--a2)', icon:'⬡' },
-  payee_changed:    { bg:'#F1EFE8', color:'#444441', icon:'👤' },
+  payee_changed:    { bg:'var(--sand3)', color:'var(--stone2)', icon:'👤' },
   unallocated:      { bg:'var(--sand2)', color:'var(--stone)', icon:'✕' },
 };
 
@@ -86,7 +86,7 @@ export function AuditTrailReport() {
             <select
               value={limit}
               onChange={e => setLimit(parseInt(e.target.value))}
-              style={{ padding:'4px 8px', fontSize:11.5, border:'0.5px solid var(--bd2)', borderRadius:'var(--rr)', background:'#FDFAF6', color:'var(--ink)', fontFamily:'var(--font-sans)' }}
+              style={{ padding:'4px 8px', fontSize:11.5, border:'0.5px solid var(--bd2)', borderRadius:'var(--rr)', background:'var(--bg-card)', color:'var(--ink)', fontFamily:'var(--font-sans)' }}
             >
               <option value={50}>Last 50</option>
               <option value={100}>Last 100</option>

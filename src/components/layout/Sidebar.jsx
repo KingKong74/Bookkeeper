@@ -1,14 +1,14 @@
 /**
  * components/layout/Sidebar.jsx
- * ------------------------------
- * Left navigation sidebar with collapsible icon-only mode.
+ * Left navigation sidebar.
  *
- * Collapsed state persists in localStorage so the user's preference
- * survives page refreshes. In collapsed mode only icons are visible
- * with tooltips on hover for accessibility.
+ * Logo click = toggle dark/light mode.
+ * Animation: logo spins out (0→90°), image swaps at exact midpoint,
+ * logo spins in (-90°→0). Theme change fires at the swap point so it
+ * feels instant inside the flip.
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Badge } from '../ui/index';
 import { fyLabel, dateRangeLabel } from '../../utils/helpers';
 import { useApp } from '../../context/AppContext';
@@ -74,21 +74,52 @@ export function Sidebar({ currentView, onNavigate, badges = {}, user, orgName, o
   const { transactions, dateFrom, dateTo, fyMode } = useApp();
   const footerPeriod = typeof fyMode === 'number' ? fyLabel(fyMode) : dateRangeLabel(dateFrom, dateTo);
 
-  // Collapsed state — persisted so it survives refresh
   const [collapsed, setCollapsed] = useState(() =>
     localStorage.getItem('sb_collapsed') === 'true'
   );
 
-  // Track dark mode for icon switching
+  // isDark = the CURRENT applied theme
+  // imgSrc = which icon is showing (swaps at flip midpoint)
   const [isDark, setIsDark] = useState(
-    document.documentElement.getAttribute('data-theme') === 'dark'
+    () => document.documentElement.getAttribute('data-theme') === 'dark'
   );
+  const [imgDark,   setImgDark]   = useState(() => document.documentElement.getAttribute('data-theme') === 'dark');
+  const [flipPhase, setFlipPhase] = useState(null); // null | 'out' | 'in'
+  const flipLocked = useRef(false);
+
+  // Keep isDark + imgDark in sync when theme changes externally (MutationObserver)
+  // AND handle the settings toggle with the same flip animation
   useEffect(() => {
-    const obs = new MutationObserver(() =>
-      setIsDark(document.documentElement.getAttribute('data-theme') === 'dark')
-    );
+    const obs = new MutationObserver(() => {
+      const dark = document.documentElement.getAttribute('data-theme') === 'dark';
+      setIsDark(dark);
+      // imgDark is updated by toggleTheme or the settings event handler
+    });
     obs.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
     return () => obs.disconnect();
+  }, []);
+
+  // Listen for settings page dark-mode toggle — run same flip animation
+  useEffect(() => {
+    function handleSettingsToggle(e) {
+      if (flipLocked.current) return;
+      const nextDark = e.detail.dark;
+      flipLocked.current = true;
+      setFlipPhase('out');
+      setTimeout(() => {
+        document.documentElement.setAttribute('data-theme', nextDark ? 'dark' : 'light');
+        localStorage.setItem('pref_dark_mode', nextDark ? 'true' : 'false');
+        setIsDark(nextDark);
+        setImgDark(nextDark);
+        setFlipPhase('in');
+      }, 130);
+      setTimeout(() => {
+        setFlipPhase(null);
+        flipLocked.current = false;
+      }, 270);
+    }
+    window.addEventListener('ledger:theme-toggle', handleSettingsToggle);
+    return () => window.removeEventListener('ledger:theme-toggle', handleSettingsToggle);
   }, []);
 
   function toggleCollapse() {
@@ -99,17 +130,52 @@ export function Sidebar({ currentView, onNavigate, badges = {}, user, orgName, o
     });
   }
 
+  function toggleTheme() {
+    if (flipLocked.current) return;
+    flipLocked.current = true;
+    const nextDark = !isDark;
+
+    // Phase 1: spin out (0 → 90°)
+    setFlipPhase('out');
+
+    // At 130ms (end of spin-out = midpoint): apply theme + swap image
+    setTimeout(() => {
+      document.documentElement.setAttribute('data-theme', nextDark ? 'dark' : 'light');
+      localStorage.setItem('pref_dark_mode', nextDark ? 'true' : 'false');
+      setIsDark(nextDark);
+      setImgDark(nextDark);
+      // Phase 2: spin in (-90° → 0)
+      setFlipPhase('in');
+    }, 130);
+
+    // After phase 2 completes: clear animation
+    setTimeout(() => {
+      setFlipPhase(null);
+      flipLocked.current = false;
+    }, 270);
+  }
+
+  const flipClass = flipPhase === 'out' ? ' sb-logo-btn--flip-out'
+                  : flipPhase === 'in'  ? ' sb-logo-btn--flip-in'
+                  : '';
+
   return (
     <aside className={`sb${collapsed ? ' sb--collapsed' : ''}`}>
 
-      {/* Brand + collapse toggle */}
       <div className="sb-top">
         <div className="sb-mark">
-          <img
-            src={isDark ? '/icon-dark.png' : '/icon-light.png'}
-            alt="Moniqr"
-            className="sb-logo"
-          />
+          <button
+            className={`sb-logo-btn${flipClass}`}
+            onClick={toggleTheme}
+            title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+            aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+          >
+            <img
+              src={imgDark ? '/icon-dark.png' : '/icon-light.png'}
+              alt="Moniqr"
+              className="sb-logo"
+            />
+          </button>
           {!collapsed && <span className="sb-name">Moniqr</span>}
         </div>
         {!collapsed && <div className="sb-sub">{orgName || 'Personal accounts'}</div>}
@@ -123,7 +189,6 @@ export function Sidebar({ currentView, onNavigate, badges = {}, user, orgName, o
         </button>
       </div>
 
-      {/* Navigation */}
       <nav className="sb-nav">
         {NAV_GROUPS.map((group, gi) => (
           <div className="sb-group" key={group.label || `g${gi}`}>
@@ -144,9 +209,7 @@ export function Sidebar({ currentView, onNavigate, badges = {}, user, orgName, o
                   {!collapsed && <span className="sb-item-label">{item.label}</span>}
                   {!collapsed && hasBadge  && <Badge count={badges[item.badge]}  red={item.badge === 'approve'} />}
                   {!collapsed && hasBadge2 && <Badge count={badges[item.badge2]} red />}
-                  {collapsed && (hasBadge || hasBadge2) && (
-                    <span className="sb-dot" aria-hidden="true" />
-                  )}
+                  {collapsed && (hasBadge || hasBadge2) && <span className="sb-dot" aria-hidden="true" />}
                 </div>
               );
             })}
@@ -154,7 +217,6 @@ export function Sidebar({ currentView, onNavigate, badges = {}, user, orgName, o
         ))}
       </nav>
 
-      {/* Footer */}
       {!collapsed && (
         <div className="sb-foot">
           <p>{footerPeriod}</p>
@@ -168,7 +230,6 @@ export function Sidebar({ currentView, onNavigate, badges = {}, user, orgName, o
         </div>
       )}
 
-      {/* Collapsed footer — just sign out icon */}
       {collapsed && user && (
         <div className="sb-foot sb-foot--collapsed">
           <button onClick={onSignOut} className="sb-signout-icon" title="Sign out" aria-label="Sign out">

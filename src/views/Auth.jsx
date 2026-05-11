@@ -4,7 +4,7 @@
  * Logo click toggles dark/light mode — preference persists to the main app.
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { signIn, signUp } from '../services/authService';
 
 function getTheme() {
@@ -24,15 +24,28 @@ export function AuthScreen() {
   const [loading,  setLoading]  = useState(false);
   const [error,    setError]    = useState('');
   const [success,  setSuccess]  = useState('');
-  const [dark,     setDark]     = useState(() => getTheme() === 'dark');
+  const [dark,      setDark]     = useState(() => getTheme() === 'dark');
+  const [flipPhase, setFlipPhase] = useState(null); // null | 'out' | 'in'
+  const flipLocked = useRef(false);
 
   // Apply saved theme on mount
   useEffect(() => { applyTheme(dark); }, []);
 
   function toggleTheme() {
+    if (flipLocked.current) return;
+    flipLocked.current = true;
     const next = !dark;
-    setDark(next);
-    applyTheme(next);
+
+    setFlipPhase('out');
+    setTimeout(() => {
+      applyTheme(next);
+      setDark(next);
+      setFlipPhase('in');
+    }, 130);
+    setTimeout(() => {
+      setFlipPhase(null);
+      flipLocked.current = false;
+    }, 270);
   }
 
   async function handleSubmit(e) {
@@ -65,13 +78,15 @@ export function AuthScreen() {
           <button
             onClick={toggleTheme}
             title={dark ? 'Switch to light mode' : 'Switch to dark mode'}
+            className={flipPhase === 'out' ? 'sb-logo-btn--flip-out' : flipPhase === 'in' ? 'sb-logo-btn--flip-in' : ''}
             style={{
               background: 'none', border: 'none', cursor: 'pointer',
               padding: 0, display: 'inline-block', marginBottom: 16,
-              borderRadius: 22, transition: 'transform 0.15s ease',
+              borderRadius: 22, perspective: '400px',
+              transition: flipPhase ? 'none' : 'transform 0.15s ease',
             }}
-            onMouseEnter={e => e.currentTarget.style.transform = 'scale(1.05)'}
-            onMouseLeave={e => e.currentTarget.style.transform = 'scale(1)'}
+            onMouseEnter={e => { if (!flipPhase) e.currentTarget.style.transform = 'scale(1.05)'; }}
+            onMouseLeave={e => { e.currentTarget.style.transform = 'scale(1)'; }}
           >
             <img
               src={dark ? '/icon-dark.png' : '/icon-light.png'}

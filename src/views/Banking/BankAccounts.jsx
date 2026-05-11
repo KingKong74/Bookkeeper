@@ -12,6 +12,7 @@ import React, { useState, useRef } from 'react';
 import { useApp } from '../../context/AppContext';
 import { supabase } from '../../lib/supabase';
 import { createBankAccount, updateBankAccount, deleteBankAccount } from '../../services/bankService';
+import { getTransactions, getBankAccounts } from '../../lib/supabase';
 
 const ACCOUNT_TYPES = [
   { value:'checking',    label:'Everyday / Cheque', icon:'🏦' },
@@ -20,11 +21,11 @@ const ACCOUNT_TYPES = [
   { value:'loan',        label:'Loan',              icon:'📋' },
   { value:'investment',  label:'Investment',        icon:'📈' },
 ];
-const ACCOUNT_COLOURS = ['#185FA5','#0C447C','#3B6D11','#1D9E75','#BA7517','#854F0B','#993C1D','#D85A30','#D4537E','#7F77DD','#5F5E5A','#444441'];
+const ACCOUNT_COLOURS = ['#185FA5','#0C447C','var(--gn)','#1D9E75','var(--a)','var(--a2)','#993C1D','#D85A30','#D4537E','#7F77DD','#5F5E5A','#444441'];
 const typeInfo = v => ACCOUNT_TYPES.find(t => t.value === v) || ACCOUNT_TYPES[0];
 const fmtBal  = n => '$' + Math.abs(n).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 
-export function BankAccounts({ onNavigate }) {
+export function BankAccounts({ onNavigate, onSandboxReview }) {
   const { accounts: _accts, setAccounts, txns, setTxns, org, toast, PALETTE } = useApp();
   const [basiqConnecting, setBasiqConnecting] = React.useState(false);
   const [basiqSyncing,    setBasiqSyncing]    = React.useState(false);
@@ -60,6 +61,65 @@ export function BankAccounts({ onNavigate }) {
     }
   }
 
+  // Build parsedFiles-format from raw DB transactions grouped by account
+  async function routeToReview(insertedCount) {
+    if (insertedCount === 0) { toast('No new transactions found.'); return; }
+    // Refresh accounts in context
+    const freshAccts = await getBankAccounts(org.id);
+    setAccounts(freshAccts);
+
+    // Fetch ONLY the pending_import transactions (awaiting user approval)
+    const { data: pendingTxns } = await supabase
+      .from('transactions')
+      .select('*')
+      .eq('org_id', org.id)
+      .eq('pending_import', true)
+      .order('date', { ascending: false });
+
+    const normaliseTxn = t => ({
+      ...t,
+      cat: t.category_id ?? null,
+      desc: t.description ?? '',
+      amt: parseFloat(t.amount) ?? 0,
+      payee: t.payees?.name ?? t.payee ?? '',
+      note: t.note ?? '',
+    });
+    const normalisedPending = (pendingTxns || []).map(normaliseTxn);
+
+    // Group by account for multi-account review
+    const byAcct = {};
+    normalisedPending.forEach(t => {
+      const key = t.account_id || '__unlinked__';
+      if (!byAcct[key]) byAcct[key] = [];
+      byAcct[key].push(t);
+    });
+    const acctMap = Object.fromEntries(freshAccts.map(a => [a.id, a]));
+    const parsedFiles = Object.entries(byAcct).map(([acctId, acctTxns]) => {
+      const acct = acctMap[acctId];
+      return {
+        filename: acct ? `${acct.name} (${ACCOUNT_TYPES.find(t => t.value === acct.type)?.label || acct.type})` : 'Unlinked transactions',
+        transactions: acctTxns.map(t => ({
+          id: t.id,           // DB id — needed for pending_import approval
+          date: t.date,
+          desc: t.desc,
+          amt: t.amt,
+          note: t.note,
+          _accountId: acctId === '__unlinked__' ? null : acctId,
+        })),
+        summary: null,
+        fileType: 'bank_feed',
+        _accountId: acctId === '__unlinked__' ? null : acctId,
+        _acctColour: acct?.colour,
+        _acctType: acct?.type,
+      };
+    });
+    if (onSandboxReview) {
+      onSandboxReview(parsedFiles);
+    } else {
+      toast(`${insertedCount} transactions synced. Navigate to Import to review.`);
+    }
+  }
+
   async function syncBasiq(fromDate) {
     setBasiqSyncing(true); setBasiqStatus(null);
     try {
@@ -69,8 +129,9 @@ export function BankAccounts({ onNavigate }) {
       if (res.error) throw new Error(res.error.message ?? JSON.stringify(res.error));
       const { accounts: n, transactions: tx } = res.data;
       setBasiqStatus(tx);
-      toast(`Synced — ${tx.inserted} new transaction${tx.inserted !== 1 ? 's' : ''} across ${n} account${n !== 1 ? 's' : ''}.`);
-      setTimeout(() => window.location.reload(), 1000);
+      const txDetail = `${tx.inserted} new, ${tx.skipped} already existed (${tx.fetched} fetched from Basiq)`;
+      toast(`Synced ${n} account${n!==1?'s':''} · ${txDetail}.`);
+      await routeToReview(tx.inserted ?? 0);
     } catch(e) { toast('Sync failed: ' + e.message); }
     setBasiqSyncing(false);
   }
@@ -80,30 +141,28 @@ export function BankAccounts({ onNavigate }) {
       window.history.replaceState({}, '', window.location.pathname);
       syncBasiq();
     }
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function connectSandbox() {
     setBasiqSyncing(true); setBasiqStatus(null);
     try {
       toast('Connecting sandbox bank (Hooli Bank)…');
-      // Step 1: create the sandbox connection
       const connectRes = await supabase.functions.invoke('basiq-sandbox-connect', {
         body: { orgId: org.id, loginId: 'gavinBelson', password: 'hooli2016', institution: 'AU00000' },
       });
       if (connectRes.error) throw new Error(connectRes.error.message ?? JSON.stringify(connectRes.error));
-      const { status, jobId } = connectRes.data;
+      const { status } = connectRes.data;
       if (status === 'failed') throw new Error('Sandbox connection job failed. Check Basiq dashboard logs.');
-
-      // Step 2: sync transactions
       toast('Connected! Syncing transactions…');
-      const syncRes = await supabase.functions.invoke('basiq-sync', {
-        body: { orgId: org.id },
-      });
+      const syncRes = await supabase.functions.invoke('basiq-sync', { body: { orgId: org.id } });
       if (syncRes.error) throw new Error(syncRes.error.message ?? JSON.stringify(syncRes.error));
       const { transactions: tx, accounts: n } = syncRes.data;
       setBasiqStatus(tx);
-      toast(`Sandbox sync complete — ${tx.inserted} transactions across ${n} account${n!==1?'s':''}.`);
-      setTimeout(() => window.location.reload(), 1000);
+      const detail = tx.fetched !== tx.matched
+        ? `${tx.inserted} new, ${tx.skipped} already existed (${tx.fetched} fetched from Basiq, ${tx.matched} matched to accounts)`
+        : `${tx.inserted} new, ${tx.skipped} already existed`;
+      toast(`Synced ${n} account${n!==1?'s':''} · ${detail}.`);
+      await routeToReview(tx.inserted ?? 0);
     } catch(e) { toast('Sandbox connect failed: ' + e.message); }
     setBasiqSyncing(false);
   }
@@ -150,8 +209,13 @@ export function BankAccounts({ onNavigate }) {
 
   // ── Balance calculation ────────────────────────────────────────────────────
   function calcBalance(acct) {
-    const sum = txnsList.filter(t => t.account_id === acct.id).reduce((s,t) => s+(t.amt??0), 0);
-    return (acct.opening_balance || 0) + sum;
+    // Only count non-pending transactions
+    const sum    = txnsList.filter(t => t.account_id === acct.id && !t.pending_import).reduce((s,t) => s+(t.amt??0), 0);
+    const ob     = parseFloat(acct.opening_balance) || 0;
+    const isCC   = acct.type === 'credit_card' || acct.type === 'loan';
+    // CC: opening_balance = amount owed. Spending (negative) increases debt: owed = ob - sum
+    // Asset: balance = ob + sum
+    return isCC ? ob - sum : ob + sum;
   }
 
   // ── Edit / Create ──────────────────────────────────────────────────────────
@@ -257,7 +321,8 @@ export function BankAccounts({ onNavigate }) {
             const balance  = calcBalance(acct);
             const info     = typeInfo(acct.type);
             const isCC     = acct.type === 'credit_card';
-            const available = isCC && acct.credit_limit ? acct.credit_limit - Math.abs(balance) : null;
+            // For CC: balance = amount owed (positive), available = limit - owed
+            const available = isCC && acct.credit_limit ? acct.credit_limit - balance : null;
             const txnCnt   = txnsList.filter(t => t.account_id === acct.id).length;
 
             return (
@@ -270,11 +335,11 @@ export function BankAccounts({ onNavigate }) {
                 onDrop={e => onDrop(e, idx)}
                 onClick={() => onNavigate?.('transactions', acct.id)}
                 style={{
-                  background:'#FDFAF6',
-                  border: dragOver === idx ? `1.5px solid ${acct.colour||'#BA7517'}` : '0.5px solid var(--bd)',
+                  background:'var(--bg-card)',
+                  border: dragOver === idx ? `1.5px solid ${acct.colour||'var(--a)'}` : '0.5px solid var(--bd)',
                   borderRadius:'var(--rl)', overflow:'hidden', cursor:'pointer',
                   transition:'box-shadow 0.1s, border 0.1s',
-                  boxShadow: dragOver === idx ? `0 0 0 3px ${acct.colour||'#BA7517'}22` : 'none',
+                  boxShadow: dragOver === idx ? `0 0 0 3px ${acct.colour||'var(--a)'}22` : 'none',
                 }}
               >
                 {/* Colour strip + drag handle */}
@@ -305,13 +370,13 @@ export function BankAccounts({ onNavigate }) {
                   {isCC ? (
                     <>
                       <div style={{ fontSize:11, color:'var(--stone)', marginBottom:2 }}>Balance owing</div>
-                      <div style={{ fontSize:22, fontWeight:500, color: balance > 0 ? 'var(--rd)' : 'var(--gn)', letterSpacing:'-0.02em' }}>
-                        {fmtBal(Math.abs(balance))}
+                      <div style={{ fontSize:22, fontWeight:500, color: balance > 0.005 ? 'var(--rd)' : balance < -0.005 ? 'var(--gn)' : 'var(--stone)', letterSpacing:'-0.02em' }}>
+                        {balance > 0.005 ? fmtBal(balance) : balance < -0.005 ? `${fmtBal(Math.abs(balance))} CR` : '$0.00'}
                       </div>
                       {acct.credit_limit && (
                         <>
                           <div style={{ marginTop:8, height:5, background:'var(--sand3)', borderRadius:3 }}>
-                            <div style={{ height:5, borderRadius:3, width:`${Math.min(100, (Math.abs(balance)/acct.credit_limit)*100)}%`, background: Math.abs(balance)/acct.credit_limit > 0.8 ? 'var(--rd)' : acct.colour, transition:'width 0.3s' }} />
+                            <div style={{ height:5, borderRadius:3, width:`${Math.min(100, Math.max(0, (balance/acct.credit_limit)*100))}%`, background: balance/acct.credit_limit > 0.8 ? 'var(--rd)' : acct.colour, transition:'width 0.3s' }} />
                           </div>
                           <div style={{ display:'flex', justifyContent:'space-between', fontSize:11, color:'var(--stone)', marginTop:4 }}>
                             <span>Available: <strong style={{ color:'var(--gn)' }}>{fmtBal(Math.max(0, available))}</strong></span>

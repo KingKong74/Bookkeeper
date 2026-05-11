@@ -1,0 +1,122 @@
+/* View-specific styles */
+/* ═══════════════════════════════════════════════════════════════
+   7. VIEW-SPECIFIC STYLES
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── Metric cards ── */
+.metrics {
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px; margin-bottom: 14px;
+}
+.mc { background: var(--bg-card); border: 0.5px solid var(--bd); border-radius: var(--rl); padding: 12px 14px; }
+.mc-lbl { font-size: 11px; color: var(--stone); margin-bottom: 4px; font-weight: 500; }
+.mc-val { font-size: 20px; font-weight: 500; letter-spacing: -0.02em; }
+.mc-sub { font-size: 11px; color: var(--stone); margin-top: 2px; }
+
+/* ── Semantic colour utilities ── */
+.vp { color: var(--gn, #3B6D11); }
+.vn { color: var(--rd, #A32D2D); }
+.va { color: var(--a2, #854F0B); }
+
+/* ── Dashboard grid ── */
+.dash-grid {
+  display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  gap: 12px; margin-bottom: 12px;
+}
+
+/* ── Two-column layout (balance sheet) ── */
+.two-col { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+
+/* ── Recent transactions (dashboard) ── */
+.act-item {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 7px 14px; border-bottom: 0.5px solid var(--bd); font-size: 12px;
+}
+.act-item:last-child { border-bottom: none; }
+.act-desc { max-width: 180px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
+.act-meta { font-size: 11px; color: var(--stone); margin-top: 1px; }
+
+/* ── Budget bars ── */
+.bgt-bar-wrap { height: 4px; background: var(--sand3); border-radius: 2px; }
+.bgt-bar      { height: 4px; border-radius: 2px; background: var(--a); }
+
+/* ── Insight bars (dashboard) ── */
+.insight-bar      { height: 5px; background: var(--sand3); border-radius: 3px; }
+.insight-bar-fill { height: 5px; border-radius: 3px; }
+
+/* ── Financial statement rows ── */
+.st-head {
+  padding: 6px 12px 3px; font-size: 10px; font-weight: 500;
+  color: var(--stone); letter-spacing: 0.07em; text-transform: uppercase;
+  background: var(--sand); border-bottom: 0.5px solid var(--bd);
+}
+.st-row {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 6px 14px; border-bottom: 0.5px solid var(--bd); font-size: 12.5px;
+}
+.st-row.ind { padding-left: 26px; color: var(--stone2); }
+.st-tot {
+  display: flex; justify-content: space-between; padding: 7px 14px;
+  font-weight: 500; font-size: 12.5px;
+  border-top: 0.5px solid var(--bd2); background: var(--sand);
+}
+.st-grand {
+  display: flex; justify-content: space-between; padding: 9px 14px;
+  font-weight: 500; font-size: 13px;
+  background: var(--ab); border-top: 0.5px solid var(--a);
+}
+
+/* ── COA type badges ── */
+.coa-type     { font-size: 10.5px; padding: 2px 7px; border-radius: 99px; font-weight: 500; }
+.coa-income   { background: #EAF3DE; color: #27500A; }
+.coa-expense  { background: #FAEEDA; color: #633806; }
+.coa-asset    { background: #E6F1FB; color: #0C447C; }
+.coa-liability{ background: #FCEBEB; color: #791F1F; }
+.coa-equity   { background: #F1EFE8; color: #444441; }
+
+/* Validation error state for fields */
+.field input[style*="border-color: var(--rd)"],
+.field select[style*="border-color: var(--rd)"] {
+  border-color: var(--rd) !important;
+}
+
+/* Audit trail action icons */
+.audit-icon {
+  width: 28px; height: 28px; border-radius: 50%; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center; font-size: 12px;
+}
+
+/* Transactions table — constrain description column so row doesn't sprawl */
+.txn-table-wrap {
+  max-width: 900px;
+}
+.txn-col-desc {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Blinking error indicator for journal lines */
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0; }
+}
+
+/* Inline clear buttons — hidden until cell hovered */
+.inline-clear-btn { transition: opacity 0.15s; }
+td:hover .inline-clear-btn,
+div:hover > .inline-clear-btn { opacity: 0.5 !important; }
+.inline-clear-btn:hover { opacity: 1 !important; color: var(--rd) !important; }
+
+
+@media (max-width: 720px) {
+  .shell { position: relative; }
+  .sb {
+    position: fixed; left: 0; top: 0; bottom: 0; z-index: 200;
+    width: 52px; min-width: 52px;
+    box-shadow: 2px 0 12px rgba(0,0,0,0.18);
+  }
+  .sb--expanded-mobile { width: 204px; min-width: 204px; }
+  .main { margin-left: 52px; }
+}

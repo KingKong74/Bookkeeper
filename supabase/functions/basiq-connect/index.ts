@@ -1,85 +1,134 @@
 /**
- * supabase/functions/basiq-connect/index.ts
- *
- * Called by the frontend when the user clicks "Connect bank via Basiq".
- * Steps:
- *   1. Verifies the user is authenticated (reads JWT)
- *   2. Looks up (or creates) the Basiq user ID for this org
- *   3. Returns a Basiq consent URL — the browser opens this so the user
- *      can grant access to their bank inside Basiq's hosted UI
- *
- * Environment variables required (set in Supabase dashboard → Edge Functions → Secrets):
- *   BASIQ_API_KEY     — your Basiq API key (from basiq.io dashboard)
- *   SUPABASE_URL      — auto-set by Supabase runtime
- *   SUPABASE_SERVICE_ROLE_KEY — auto-set by Supabase runtime
+ * _shared/basiq.ts
+ * Basiq API v3 helpers shared across Edge Functions.
+ * Docs: https://api.basiq.io/docs
  */
 
-import { serve }                from 'https://deno.land/std@0.168.0/http/server.ts';
-import { createClient }         from 'https://esm.sh/@supabase/supabase-js@2';
-import { getBasiqToken, createBasiqUser, getAuthLink } from '../_shared/basiq.ts';
+const BASIQ_BASE = 'https://au-api.basiq.io';
 
-const corsHeaders = {
-  'Access-Control-Allow-Origin':  '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-};
-
-serve(async (req) => {
-  // Handle CORS preflight
-  if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
-
-  try {
-    // ── Auth: verify caller is a logged-in user ────────────────────────────
-    const supabase = createClient(
-      Deno.env.get('SUPABASE_URL')!,
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
-    );
-
-    const authHeader = req.headers.get('Authorization') ?? '';
-    const { data: { user }, error: authErr } = await supabase.auth.getUser(
-      authHeader.replace('Bearer ', '')
-    );
-    if (authErr || !user) return new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401, headers: corsHeaders });
-
-    // ── Read body ─────────────────────────────────────────────────────────
-    const { orgId, redirectUrl } = await req.json();
-    if (!orgId) return new Response(JSON.stringify({ error: 'orgId required' }), { status: 400, headers: corsHeaders });
-
-    // ── Get Basiq token ───────────────────────────────────────────────────
-    const apiKey = Deno.env.get('BASIQ_API_KEY');
-    if (!apiKey) return new Response(JSON.stringify({ error: 'BASIQ_API_KEY not set' }), { status: 500, headers: corsHeaders });
-    const token = await getBasiqToken(apiKey);
-
-    // ── Look up or create Basiq user for this org ─────────────────────────
-    const { data: org } = await supabase
-      .from('organisations')
-      .select('id, name, basiq_user_id')
-      .eq('id', orgId)
-      .single();
-
-    let basiqUserId = org?.basiq_user_id;
-
-    if (!basiqUserId) {
-      // Create a Basiq user (use org name + id as a stable email-like identifier)
-      const fakeEmail = `org-${orgId}@ledger.app`;
-      basiqUserId = await createBasiqUser(token, fakeEmail);
-      // Save it back to the org
-      await supabase.from('organisations').update({ basiq_user_id: basiqUserId }).eq('id', orgId);
-    }
-
-    // ── Generate the consent link ─────────────────────────────────────────
-    const fallbackRedirect = redirectUrl ?? `${req.headers.get('origin') ?? 'https://yourapp.com'}/basiq-callback`;
-    const consentUrl = await getAuthLink(token, basiqUserId, fallbackRedirect);
-
-    return new Response(
-      JSON.stringify({ url: consentUrl, basiqUserId }),
-      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
-
-  } catch (e) {
-    console.error('basiq-connect error:', e);
-    return new Response(
-      JSON.stringify({ error: e.message }),
-      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
+/** Exchange your API key for a server access token (valid 60 mins) */
+export async function getBasiqToken(apiKey: string): Promise<string> {
+  const res = await fetch(`${BASIQ_BASE}/token`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Basic ${apiKey.trim()}`,  // Basiq v3: raw API key, not base64-encoded
+      'Content-Type':  'application/x-www-form-urlencoded',
+      'basiq-version': '3.0',
+    },
+    body: 'scope=SERVER_ACCESS',
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Basiq token error ${res.status}: ${err}`);
   }
-});
+  const data = await res.json();
+  return data.access_token as string;
+}
+
+/** Create a Basiq user and return their ID */
+export async function createBasiqUser(token: string, email: string): Promise<string> {
+  const res = await fetch(`${BASIQ_BASE}/users`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type':  'application/json',
+      'basiq-version': '3.0',
+    },
+    body: JSON.stringify({ email }),
+  });
+  if (!res.ok) throw new Error(`Basiq create user ${res.status}: ${await res.text()}`);
+  const data = await res.json();
+  return data.id as string;
+}
+
+/** Get or create a Basiq consent / auth link for the user */
+export async function getAuthLink(token: string, basiqUserId: string, redirectUrl: string): Promise<string> {
+  const res = await fetch(`${BASIQ_BASE}/users/${basiqUserId}/auth_link`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type':  'application/json',
+      'basiq-version': '3.0',
+    },
+    body: JSON.stringify({
+      mobile:      '',
+      redirectUrl,
+    }),
+  });
+  if (!res.ok) throw new Error(`Basiq auth link ${res.status}: ${await res.text()}`);
+  const data = await res.json();
+  return data.links?.public ?? data.url ?? data.link;
+}
+
+/** Fetch all accounts for a Basiq user */
+export async function getBasiqAccounts(token: string, basiqUserId: string): Promise<any[]> {
+  const res = await fetch(`${BASIQ_BASE}/users/${basiqUserId}/accounts`, {
+    headers: { 'Authorization': `Bearer ${token}`, 'basiq-version': '3.0' },
+  });
+  if (!res.ok) throw new Error(`Basiq accounts ${res.status}: ${await res.text()}`);
+  const data = await res.json();
+  return data.data ?? [];
+}
+
+/** Fetch transactions for a Basiq account, from a given date */
+export async function getBasiqTransactions(
+  token: string,
+  basiqUserId: string,
+  fromDate: string,        // YYYY-MM-DD
+  toDate?: string,
+): Promise<any[]> {
+  const params = new URLSearchParams({
+    'filter[account.id]': '', // fetch all accounts
+    limit: '500',
+    from: fromDate,
+  });
+  if (toDate) params.set('to', toDate);
+
+  let url = `${BASIQ_BASE}/users/${basiqUserId}/transactions?${params}`;
+  const all: any[] = [];
+
+  // Paginate through Basiq's cursor-based pages
+  while (url) {
+    const res = await fetch(url, {
+      headers: { 'Authorization': `Bearer ${token}`, 'basiq-version': '3.0' },
+    });
+    if (!res.ok) throw new Error(`Basiq txns ${res.status}: ${await res.text()}`);
+    const data = await res.json();
+    all.push(...(data.data ?? []));
+    url = data.links?.next ?? null;
+  }
+  return all;
+}
+
+/** Map a Basiq account type string to your app's type enum */
+export function mapAccountType(basiqClass: string): string {
+  const m: Record<string, string> = {
+    'transaction': 'checking',
+    'savings':     'savings',
+    'credit-card': 'credit_card',
+    'mortgage':    'loan',
+    'loan':        'loan',
+    'investment':  'investment',
+  };
+  return m[basiqClass?.toLowerCase()] ?? 'checking';
+}
+
+/**
+ * Normalise a Basiq transaction to match your transactions table schema.
+ * Basiq amounts: negative = money out, positive = money in (same as your schema).
+ */
+export function normaliseBasiqTxn(bt: any, bankAccountId: string, orgId: string): object {
+  // bt.account is a plain string ID. bt.amount is a string e.g. "-139.98".
+  // bt.postDate / bt.transactionDate are ISO datetime strings.
+  const dateStr = (bt.postDate ?? bt.transactionDate ?? '').slice(0, 10);
+  return {
+    org_id:       orgId,
+    account_id:   bankAccountId,
+    date:         dateStr || new Date().toISOString().slice(0, 10),
+    description:  bt.description ?? '',
+    amount:       parseFloat(bt.amount ?? '0'),
+    currency:     bt.currency ?? 'AUD',
+    import_hash:  `basiq:${bt.id}`,
+    basiq_txn_id: bt.id,
+  };
+}
