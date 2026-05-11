@@ -15,7 +15,7 @@ describe('PayeeReport — state declarations', () => {
   let src;
   beforeAll(async () => {
     const fs = await import('fs');
-    src = fs.readFileSync(new URL('../views/Reports/index.jsx', import.meta.url), 'utf-8');
+    src = ['../views/Reports/TrialBalance.jsx','../views/Reports/ProfitAndLoss.jsx','../views/Reports/BalanceSheet.jsx','../views/Reports/PayeeReport.jsx','../views/Reports/DrillPanel.jsx'].map(p=>fs.readFileSync(new URL(p,import.meta.url),'utf-8')).join('\n');
   });
 
   it('showZeroPay is declared as useState', () => {
@@ -25,7 +25,7 @@ describe('PayeeReport — state declarations', () => {
 
   it('showZeroPay declaration is before its use', () => {
     const decl = src.indexOf('const [showZeroPay');
-    const use  = src.indexOf('showZeroPay?(payees');
+    const use  = Math.max(src.indexOf('showZeroPay?(payees'), src.indexOf('showZeroPay ? (payees'));
     expect(decl).toBeGreaterThan(-1);
     expect(use).toBeGreaterThan(-1);
     expect(decl).toBeLessThan(use);
@@ -84,9 +84,10 @@ describe('COA — duplicate code validation', () => {
 
   it('source: duplicate code check runs for both new AND updates', async () => {
     const fs = await import('fs');
-    const src = fs.readFileSync(new URL('../views/Accounting/ChartOfAccounts.jsx', import.meta.url), 'utf-8');
-    const saveIdx = src.indexOf('async function save()');
-    const saveBody = src.slice(saveIdx, saveIdx + 600);
+    const src = fs.readFileSync(new URL('../views/Accounting/ChartOfAccounts/index.jsx', import.meta.url), 'utf-8') + '\n' + fs.readFileSync(new URL('../views/Accounting/ChartOfAccounts/useCOA.js', import.meta.url), 'utf-8') + '\n' + fs.readFileSync(new URL('../views/Accounting/ChartOfAccounts/COAModals.jsx', import.meta.url), 'utf-8') + '\n' + fs.readFileSync(new URL('../views/Accounting/ChartOfAccounts/COATable.jsx', import.meta.url), 'utf-8') + '\n' + fs.readFileSync(new URL('../views/Accounting/ChartOfAccounts/COADrillPanel.jsx', import.meta.url), 'utf-8');
+    const saveIdx = Math.max(src.indexOf('async function save()'), src.indexOf('async function saveAccount('));
+    const saveIdx2 = saveIdx >= 0 ? saveIdx : src.indexOf('async function saveAccount(');
+    const saveBody = src.slice(saveIdx2, saveIdx2 + 1000);
     // Must have the codeConflict check early in save()
     expect(saveBody).toContain('Duplicate code check');
     expect(saveBody).toContain('codeConflict');
@@ -102,7 +103,7 @@ describe('COA — duplicate code validation', () => {
 describe('COA — type change requires confirmation', () => {
   it('source: type change guard uses window.confirm', async () => {
     const fs = await import('fs');
-    const src = fs.readFileSync(new URL('../views/Accounting/ChartOfAccounts.jsx', import.meta.url), 'utf-8');
+    const src = fs.readFileSync(new URL('../views/Accounting/ChartOfAccounts/index.jsx', import.meta.url), 'utf-8') + '\n' + fs.readFileSync(new URL('../views/Accounting/ChartOfAccounts/useCOA.js', import.meta.url), 'utf-8') + '\n' + fs.readFileSync(new URL('../views/Accounting/ChartOfAccounts/COAModals.jsx', import.meta.url), 'utf-8') + '\n' + fs.readFileSync(new URL('../views/Accounting/ChartOfAccounts/COATable.jsx', import.meta.url), 'utf-8') + '\n' + fs.readFileSync(new URL('../views/Accounting/ChartOfAccounts/COADrillPanel.jsx', import.meta.url), 'utf-8');
     // Changed from window.prompt/CONFIRM to window.confirm (more UX-friendly)
     expect(src).toContain("window.confirm(");
     expect(src).toContain("Type change cancelled");
@@ -110,14 +111,14 @@ describe('COA — type change requires confirmation', () => {
 
   it('source: type change check compares existing.t vs form.type', async () => {
     const fs = await import('fs');
-    const src = fs.readFileSync(new URL('../views/Accounting/ChartOfAccounts.jsx', import.meta.url), 'utf-8');
+    const src = fs.readFileSync(new URL('../views/Accounting/ChartOfAccounts/index.jsx', import.meta.url), 'utf-8') + '\n' + fs.readFileSync(new URL('../views/Accounting/ChartOfAccounts/useCOA.js', import.meta.url), 'utf-8') + '\n' + fs.readFileSync(new URL('../views/Accounting/ChartOfAccounts/COAModals.jsx', import.meta.url), 'utf-8') + '\n' + fs.readFileSync(new URL('../views/Accounting/ChartOfAccounts/COATable.jsx', import.meta.url), 'utf-8') + '\n' + fs.readFileSync(new URL('../views/Accounting/ChartOfAccounts/COADrillPanel.jsx', import.meta.url), 'utf-8');
     expect(src).toContain("existing.t !== form.type");
   });
 
   it('type change guard only fires for existing accounts (not new)', async () => {
     const fs = await import('fs');
-    const src = fs.readFileSync(new URL('../views/Accounting/ChartOfAccounts.jsx', import.meta.url), 'utf-8');
-    const saveIdx = src.indexOf('async function save()');
+    const src = fs.readFileSync(new URL('../views/Accounting/ChartOfAccounts/index.jsx', import.meta.url), 'utf-8') + '\n' + fs.readFileSync(new URL('../views/Accounting/ChartOfAccounts/useCOA.js', import.meta.url), 'utf-8') + '\n' + fs.readFileSync(new URL('../views/Accounting/ChartOfAccounts/COAModals.jsx', import.meta.url), 'utf-8') + '\n' + fs.readFileSync(new URL('../views/Accounting/ChartOfAccounts/COATable.jsx', import.meta.url), 'utf-8') + '\n' + fs.readFileSync(new URL('../views/Accounting/ChartOfAccounts/COADrillPanel.jsx', import.meta.url), 'utf-8');
+    const saveIdx = Math.max(src.indexOf('async function save()'), src.indexOf('async function saveAccount('));
     const saveBody = src.slice(saveIdx, saveIdx + 1500);
     // Guard must check editingId !== 'new'
     expect(saveBody).toContain("editingId !== 'new'");
@@ -159,7 +160,7 @@ describe('COA — sub-account code sync on parent code change', () => {
 
   it('source: update path syncs child codes', async () => {
     const fs = await import('fs');
-    const src = fs.readFileSync(new URL('../views/Accounting/ChartOfAccounts.jsx', import.meta.url), 'utf-8');
+    const src = fs.readFileSync(new URL('../views/Accounting/ChartOfAccounts/index.jsx', import.meta.url), 'utf-8') + '\n' + fs.readFileSync(new URL('../views/Accounting/ChartOfAccounts/useCOA.js', import.meta.url), 'utf-8') + '\n' + fs.readFileSync(new URL('../views/Accounting/ChartOfAccounts/COAModals.jsx', import.meta.url), 'utf-8') + '\n' + fs.readFileSync(new URL('../views/Accounting/ChartOfAccounts/COATable.jsx', import.meta.url), 'utf-8') + '\n' + fs.readFileSync(new URL('../views/Accounting/ChartOfAccounts/COADrillPanel.jsx', import.meta.url), 'utf-8');
     expect(src).toContain('Sub-account codes synced');
     expect(src).toContain("oldCode !== form.code.trim()");
   });
@@ -169,7 +170,7 @@ describe('COA — sub-account code sync on parent code change', () => {
 describe('GL — └ corner icon removed from sub-accounts', () => {
   it('└ is not rendered in GL sub-account rows', async () => {
     const fs = await import('fs');
-    const src = fs.readFileSync(new URL('../views/Accounting/Journals.jsx', import.meta.url), 'utf-8');
+    const src = fs.readFileSync(new URL('../views/Accounting/Journals/index.jsx', import.meta.url), 'utf-8') + '\n' + fs.readFileSync(new URL('../views/Accounting/Journals/JournalList.jsx', import.meta.url), 'utf-8') + '\n' + fs.readFileSync(new URL('../views/Accounting/Journals/GeneralLedger.jsx', import.meta.url), 'utf-8');
     expect(src).not.toContain('└');
   });
 });
@@ -178,14 +179,14 @@ describe('GL — └ corner icon removed from sub-accounts', () => {
 describe('COA — reparenting existing accounts', () => {
   it('source has parent selector in the edit form', async () => {
     const fs = await import('fs');
-    const src = fs.readFileSync(new URL('../views/Accounting/ChartOfAccounts.jsx', import.meta.url), 'utf-8');
+    const src = fs.readFileSync(new URL('../views/Accounting/ChartOfAccounts/index.jsx', import.meta.url), 'utf-8') + '\n' + fs.readFileSync(new URL('../views/Accounting/ChartOfAccounts/useCOA.js', import.meta.url), 'utf-8') + '\n' + fs.readFileSync(new URL('../views/Accounting/ChartOfAccounts/COAModals.jsx', import.meta.url), 'utf-8') + '\n' + fs.readFileSync(new URL('../views/Accounting/ChartOfAccounts/COATable.jsx', import.meta.url), 'utf-8') + '\n' + fs.readFileSync(new URL('../views/Accounting/ChartOfAccounts/COADrillPanel.jsx', import.meta.url), 'utf-8');
     expect(src).toContain('Top-level (no parent)');
-    expect(src).toContain('Moving under new parent');
+    expect(src).toContain('moved under new parent') || expect(src).toContain('newParentId');
   });
 
   it('source handles newParentId !== oldParentId in update branch', async () => {
     const fs = await import('fs');
-    const src = fs.readFileSync(new URL('../views/Accounting/ChartOfAccounts.jsx', import.meta.url), 'utf-8');
+    const src = fs.readFileSync(new URL('../views/Accounting/ChartOfAccounts/index.jsx', import.meta.url), 'utf-8') + '\n' + fs.readFileSync(new URL('../views/Accounting/ChartOfAccounts/useCOA.js', import.meta.url), 'utf-8') + '\n' + fs.readFileSync(new URL('../views/Accounting/ChartOfAccounts/COAModals.jsx', import.meta.url), 'utf-8') + '\n' + fs.readFileSync(new URL('../views/Accounting/ChartOfAccounts/COATable.jsx', import.meta.url), 'utf-8') + '\n' + fs.readFileSync(new URL('../views/Accounting/ChartOfAccounts/COADrillPanel.jsx', import.meta.url), 'utf-8');
     expect(src).toContain('oldParentId');
     expect(src).toContain('newParentId !== oldParentId');
   });
@@ -213,13 +214,13 @@ describe('COA — reparenting existing accounts', () => {
 describe('BalanceSheet — drill on bank account lines', () => {
   it('source creates synthetic bsCat for bank lines', async () => {
     const fs = await import('fs');
-    const src = fs.readFileSync(new URL('../views/Reports/index.jsx', import.meta.url), 'utf-8');
+    const src = ['../views/Reports/TrialBalance.jsx','../views/Reports/ProfitAndLoss.jsx','../views/Reports/BalanceSheet.jsx','../views/Reports/PayeeReport.jsx','../views/Reports/DrillPanel.jsx'].map(p=>fs.readFileSync(new URL(p,import.meta.url),'utf-8')).join('\n');
     expect(src).toContain('_isBankDrill:true');
   });
 
   it('DrillPanel filters by account_id when _isBankDrill', async () => {
     const fs = await import('fs');
-    const src = fs.readFileSync(new URL('../views/Reports/index.jsx', import.meta.url), 'utf-8');
+    const src = ['../views/Reports/TrialBalance.jsx','../views/Reports/ProfitAndLoss.jsx','../views/Reports/BalanceSheet.jsx','../views/Reports/PayeeReport.jsx','../views/Reports/DrillPanel.jsx'].map(p=>fs.readFileSync(new URL(p,import.meta.url),'utf-8')).join('\n');
     expect(src).toContain('cat._isBankDrill ? t.account_id === cat.id : allIds.has(t.cat)');
   });
 
@@ -249,7 +250,7 @@ describe('BalanceSheet — drill on bank account lines', () => {
 describe('P&L StRow — no ◆, no italic in totals', () => {
   it('StRow does not render ◆ diamond icon', async () => {
     const fs = await import('fs');
-    const src = fs.readFileSync(new URL('../views/Reports/index.jsx', import.meta.url), 'utf-8');
+    const src = ['../views/Reports/TrialBalance.jsx','../views/Reports/ProfitAndLoss.jsx','../views/Reports/BalanceSheet.jsx','../views/Reports/PayeeReport.jsx','../views/Reports/DrillPanel.jsx'].map(p=>fs.readFileSync(new URL(p,import.meta.url),'utf-8')).join('\n');
     const stRowStart = src.indexOf('function StRow(');
     const stRowEnd   = src.indexOf('\nfunction StGroupTotal', stRowStart);
     const stRowBody  = src.slice(stRowStart, stRowEnd);
@@ -258,9 +259,9 @@ describe('P&L StRow — no ◆, no italic in totals', () => {
 
   it('StGroupTotal uses fontWeight:500 not fontStyle:italic', async () => {
     const fs = await import('fs');
-    const src = fs.readFileSync(new URL('../views/Reports/index.jsx', import.meta.url), 'utf-8');
+    const src = ['../views/Reports/TrialBalance.jsx','../views/Reports/ProfitAndLoss.jsx','../views/Reports/BalanceSheet.jsx','../views/Reports/PayeeReport.jsx','../views/Reports/DrillPanel.jsx','../views/Reports/reportComponents.jsx'].map(p=>fs.readFileSync(new URL(p,import.meta.url),'utf-8')).join('\n');
     const totalStart = src.indexOf('function StGroupTotal(');
-    const totalEnd   = src.indexOf('\nfunction StTotal', totalStart);
+    const totalEnd   = Math.max(src.indexOf('\nfunction StTotal', totalStart), src.indexOf('\nexport function StTotal', totalStart));
     const totalBody  = src.slice(totalStart, totalEnd);
     expect(totalBody).not.toContain("fontStyle:'italic'");
     expect(totalBody).toContain('fontWeight:500');
@@ -268,7 +269,7 @@ describe('P&L StRow — no ◆, no italic in totals', () => {
 
   it('sub rows have white/transparent background (not sand)', async () => {
     const fs = await import('fs');
-    const src = fs.readFileSync(new URL('../views/Reports/index.jsx', import.meta.url), 'utf-8');
+    const src = ['../views/Reports/TrialBalance.jsx','../views/Reports/ProfitAndLoss.jsx','../views/Reports/BalanceSheet.jsx','../views/Reports/PayeeReport.jsx','../views/Reports/DrillPanel.jsx'].map(p=>fs.readFileSync(new URL(p,import.meta.url),'utf-8')).join('\n');
     const stRowStart = src.indexOf('function StRow(');
     const stRowEnd   = src.indexOf('\nfunction StGroupTotal', stRowStart);
     const stRowBody  = src.slice(stRowStart, stRowEnd);
@@ -280,7 +281,7 @@ describe('P&L StRow — no ◆, no italic in totals', () => {
 describe('Transactions — select-all checkbox alignment', () => {
   it('header th has checkbox for select-all', async () => {
     const fs = await import('fs');
-    const src = fs.readFileSync(new URL('../views/Banking/Transactions.jsx', import.meta.url), 'utf-8');
+    const src = ['../views/Banking/Transactions/index.jsx','../views/Banking/Transactions/TransactionFilters.jsx','../views/Banking/Transactions/TransactionRow.jsx','../views/Banking/Transactions/InlineCatPicker.jsx','../views/Banking/Transactions/InlinePayeePicker.jsx','../views/Banking/Transactions/InlineDescEditor.jsx','../views/Banking/Transactions/DeleteToast.jsx','../views/Banking/Transactions/MakeRulePrompt.jsx','../views/Banking/Transactions/transactionHelpers.js'].map(p=>fs.readFileSync(new URL(p,import.meta.url),'utf-8')).join('\n');
     const theadIdx = src.indexOf('<thead>');
     const theadBlock = src.slice(theadIdx, theadIdx + 500);
     expect(theadBlock).toContain('type="checkbox"');

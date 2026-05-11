@@ -9,7 +9,8 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { useApp } from '../../context/AppContext';
-import { updateTransaction, upsertPayee, getTransactionFiles, uploadTransactionFile, deleteTransactionFile, getFileUrl } from '../../lib/supabase';
+import { updateTransaction, getTransactionFiles, uploadTransactionFile, deleteTransactionFile, getFileUrl } from '../../lib/supabase';
+import { upsertPayee } from '../../services/categoryService';
 import { logAudit, getAuditTrail, describeChange, formatAuditDate } from '../../lib/audit';
 import { fmt, payeeColor } from '../../utils/helpers';
 

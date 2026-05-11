@@ -1,39 +1,50 @@
 /**
  * views/Auth.jsx
- * --------------
- * Sign in / Sign up screen shown when the user has no active session.
- * Minimal — just email + password. No social login for now.
- *
- * After sign-up, Supabase sends a confirmation email. The user's org
- * and default data are seeded by the create_personal_org() DB function.
+ * Moniqr branded sign-in / sign-up screen.
+ * Logo click toggles dark/light mode — preference persists to the main app.
  */
 
-import React, { useState } from 'react';
-import { signIn, signUp } from '../lib/supabase';
+import React, { useState, useEffect } from 'react';
+import { signIn, signUp } from '../services/authService';
+
+function getTheme() {
+  return localStorage.getItem('pref_dark_mode') === 'true' ? 'dark' : 'light';
+}
+
+function applyTheme(dark) {
+  document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+  localStorage.setItem('pref_dark_mode', dark ? 'true' : 'false');
+}
 
 export function AuthScreen() {
-  const [mode,     setMode]     = useState('signin'); // 'signin' | 'signup'
+  const [mode,     setMode]     = useState('signin');
   const [email,    setEmail]    = useState('');
   const [password, setPassword] = useState('');
   const [name,     setName]     = useState('');
   const [loading,  setLoading]  = useState(false);
   const [error,    setError]    = useState('');
   const [success,  setSuccess]  = useState('');
+  const [dark,     setDark]     = useState(() => getTheme() === 'dark');
+
+  // Apply saved theme on mount
+  useEffect(() => { applyTheme(dark); }, []);
+
+  function toggleTheme() {
+    const next = !dark;
+    setDark(next);
+    applyTheme(next);
+  }
 
   async function handleSubmit(e) {
     e.preventDefault();
-    setError('');
-    setSuccess('');
-    setLoading(true);
-
+    setError(''); setSuccess(''); setLoading(true);
     try {
       if (mode === 'signup') {
         await signUp(email, password, name);
-        setSuccess('Account created! Check your email to confirm your address, then sign in.');
+        setSuccess('Account created! Check your email to confirm, then sign in.');
         setMode('signin');
       } else {
         await signIn(email, password);
-        // AppContext will pick up the new session via onAuthStateChange
       }
     } catch (err) {
       setError(err.message || 'Something went wrong. Please try again.');
@@ -47,84 +58,85 @@ export function AuthScreen() {
       minHeight: '100vh', display: 'flex', alignItems: 'center',
       justifyContent: 'center', background: 'var(--sand)', padding: 20,
     }}>
-      <div style={{ width: '100%', maxWidth: 380 }}>
+      <div style={{ width: '100%', maxWidth: 400 }}>
 
-        {/* Brand */}
-        <div style={{ textAlign: 'center', marginBottom: 32 }}>
-          <div style={{
-            width: 32, height: 32, background: '#BA7517',
-            transform: 'rotate(45deg)', borderRadius: 4,
-            margin: '0 auto 14px', display: 'inline-block',
-          }} />
-          <h1 style={{ fontSize: 22, fontWeight: 500, color: 'var(--ink)' }}>Ledger</h1>
-          <p style={{ fontSize: 13, color: 'var(--stone)', marginTop: 4 }}>
-            Personal finance, done properly.
+        {/* Brand — click logo to toggle dark/light */}
+        <div style={{ textAlign: 'center', marginBottom: 36 }}>
+          <button
+            onClick={toggleTheme}
+            title={dark ? 'Switch to light mode' : 'Switch to dark mode'}
+            style={{
+              background: 'none', border: 'none', cursor: 'pointer',
+              padding: 0, display: 'inline-block', marginBottom: 16,
+              borderRadius: 22, transition: 'transform 0.15s ease',
+            }}
+            onMouseEnter={e => e.currentTarget.style.transform = 'scale(1.05)'}
+            onMouseLeave={e => e.currentTarget.style.transform = 'scale(1)'}
+          >
+            <img
+              src={dark ? '/icon-dark.png' : '/icon-light.png'}
+              alt="Moniqr logo"
+              style={{ width: 88, height: 88, borderRadius: 20, display: 'block' }}
+            />
+          </button>
+
+          <h1 style={{ fontSize: 28, fontWeight: 700, margin: '0 0 4px', letterSpacing: '-0.02em', color: 'var(--ink)' }}>
+            Moniq<span style={{ color: dark ? '#7C3AED' : '#D97706' }}>r</span>
+          </h1>
+          <p style={{ fontSize: 12, color: 'var(--stone)', letterSpacing: '0.12em', textTransform: 'uppercase', margin: '0 0 2px' }}>
+            Smart bookkeeping.
+          </p>
+          <p style={{ fontSize: 12, color: dark ? '#06B6D4' : '#D97706', letterSpacing: '0.12em', textTransform: 'uppercase', margin: 0, fontWeight: 500 }}>
+            Clear insights.
+          </p>
+
+          <p style={{ fontSize: 11, color: 'var(--stone2)', marginTop: 10 }}>
+            {dark ? '☀️' : '🌙'} Click logo to switch to {dark ? 'light' : 'dark'} mode
           </p>
         </div>
 
         {/* Card */}
-        <div className="card" style={{ padding: 0 }}>
-          <div style={{ padding: '16px 20px 0' }}>
-            {/* Tab switcher */}
-            <div style={{ display: 'flex', borderBottom: '0.5px solid var(--bd)', marginBottom: 20 }}>
-              {['signin', 'signup'].map(m => (
-                <button
-                  key={m}
-                  onClick={() => { setMode(m); setError(''); setSuccess(''); }}
-                  style={{
-                    flex: 1, padding: '8px 0', background: 'none', border: 'none',
-                    cursor: 'pointer', fontSize: 13, fontFamily: 'var(--font-sans)',
-                    color: mode === m ? 'var(--ink)' : 'var(--stone)',
-                    fontWeight: mode === m ? 500 : 400,
-                    borderBottom: mode === m ? '2px solid #BA7517' : '2px solid transparent',
-                    marginBottom: -1,
-                  }}
-                >
-                  {m === 'signin' ? 'Sign in' : 'Create account'}
-                </button>
-              ))}
-            </div>
+        <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+          {/* Tab switcher */}
+          <div style={{ display: 'flex', borderBottom: '0.5px solid var(--bd)' }}>
+            {['signin', 'signup'].map(m => (
+              <button
+                key={m}
+                onClick={() => { setMode(m); setError(''); setSuccess(''); }}
+                style={{
+                  flex: 1, padding: '12px 0', background: 'none', border: 'none',
+                  cursor: 'pointer', fontSize: 13, fontFamily: 'var(--font-sans)',
+                  color: mode === m ? 'var(--ink)' : 'var(--stone)',
+                  fontWeight: mode === m ? 600 : 400,
+                  borderBottom: mode === m ? `2px solid ${dark ? '#7C3AED' : '#D97706'}` : '2px solid transparent',
+                  marginBottom: -1, transition: 'all 0.15s',
+                }}
+              >
+                {m === 'signin' ? 'Sign in' : 'Create account'}
+              </button>
+            ))}
+          </div>
 
+          <div style={{ padding: '20px 24px 24px' }}>
             <form onSubmit={handleSubmit}>
               {mode === 'signup' && (
                 <div className="field">
                   <label>Your name</label>
-                  <input
-                    type="text"
-                    value={name}
-                    onChange={e => setName(e.target.value)}
-                    placeholder="e.g. Alex"
-                    required
-                  />
+                  <input type="text" value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Alex" required />
                 </div>
               )}
-
               <div className="field">
                 <label>Email address</label>
-                <input
-                  type="email"
-                  value={email}
-                  onChange={e => setEmail(e.target.value)}
-                  placeholder="you@example.com"
-                  required
-                  autoComplete="email"
-                />
+                <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@example.com" required autoComplete="email" />
               </div>
-
               <div className="field" style={{ marginBottom: 16 }}>
                 <label>Password</label>
-                <input
-                  type="password"
-                  value={password}
-                  onChange={e => setPassword(e.target.value)}
+                <input type="password" value={password} onChange={e => setPassword(e.target.value)}
                   placeholder={mode === 'signup' ? 'Min. 8 characters' : ''}
-                  required
-                  minLength={mode === 'signup' ? 8 : undefined}
-                  autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
-                />
+                  required minLength={mode === 'signup' ? 8 : undefined}
+                  autoComplete={mode === 'signup' ? 'new-password' : 'current-password'} />
               </div>
 
-              {/* Error / success messages */}
               {error && (
                 <div style={{ padding: '8px 12px', background: 'var(--rdb)', color: 'var(--rd)', borderRadius: 'var(--rr)', fontSize: 12, marginBottom: 14 }}>
                   {error}
@@ -136,23 +148,16 @@ export function AuthScreen() {
                 </div>
               )}
 
-              <button
-                type="submit"
-                className="btn btn-a"
-                disabled={loading}
-                style={{ width: '100%', padding: '9px 0', fontSize: 13, marginBottom: 16 }}
-              >
-                {loading
-                  ? 'Please wait…'
-                  : mode === 'signin' ? 'Sign in' : 'Create account'
-                }
+              <button type="submit" className="btn btn-a" disabled={loading}
+                style={{ width: '100%', padding: '10px 0', fontSize: 14, fontWeight: 600 }}>
+                {loading ? 'Please wait…' : mode === 'signin' ? 'Sign in' : 'Create account'}
               </button>
             </form>
           </div>
         </div>
 
         <p style={{ textAlign: 'center', fontSize: 11, color: 'var(--stone)', marginTop: 16 }}>
-          Your data is stored securely in Australia (ap-southeast-2).
+          Stored securely in Australia · ap-southeast-2
         </p>
       </div>
     </div>

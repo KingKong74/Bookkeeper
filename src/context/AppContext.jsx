@@ -15,11 +15,20 @@
  */
 
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
+import { supabase } from '../lib/supabase';
+import { getMyOrgs } from '../services/authService';
+import { fetchTransactions as getTransactions } from '../services/transactionService';
+import { fetchJournals as getJournals } from '../services/journalService';
 import {
-  supabase, getMyOrgs, getTransactions, getCategories,
-  getPayees, getRules, getJournals, getBudgets,
-  getTaxProfile, getTaxReferenceData, upsertPayee,
-  getBankAccounts, getMerchantHints, getMasterCOA, getOrgSettings,
+  fetchCategories as getCategories,
+  fetchPayees as getPayees,
+  fetchRules as getRules,
+  upsertPayee,
+} from '../services/categoryService';
+import { fetchBankAccounts as getBankAccounts } from '../services/bankService';
+import {
+  getBudgets, getTaxProfile, getTaxReferenceData,
+  getMerchantHints, getMasterCOA, getOrgSettings,
 } from '../lib/supabase';
 import { currentFYStart } from '../utils/helpers';
 

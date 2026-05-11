@@ -10,7 +10,8 @@
 
 import React, { useState, useRef } from 'react';
 import { useApp } from '../../context/AppContext';
-import { createBankAccount, updateBankAccount, deleteBankAccount } from '../../lib/supabase';
+import { supabase } from '../../lib/supabase';
+import { createBankAccount, updateBankAccount, deleteBankAccount } from '../../services/bankService';
 
 const ACCOUNT_TYPES = [
   { value:'checking',    label:'Everyday / Cheque', icon:'🏦' },
@@ -25,6 +26,87 @@ const fmtBal  = n => '$' + Math.abs(n).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/
 
 export function BankAccounts({ onNavigate }) {
   const { accounts: _accts, setAccounts, txns, setTxns, org, toast, PALETTE } = useApp();
+  const [basiqConnecting, setBasiqConnecting] = React.useState(false);
+  const [basiqSyncing,    setBasiqSyncing]    = React.useState(false);
+  const [basiqStatus,     setBasiqStatus]     = React.useState(null);
+
+  async function connectBasiq() {
+    setBasiqConnecting(true);
+    try {
+      const res = await supabase.functions.invoke('basiq-connect', {
+        body: { orgId: org.id },
+      });
+      if (res.error) throw new Error(res.error.message ?? JSON.stringify(res.error));
+      const url = res.data?.url;
+      if (!url) throw new Error('No consent URL returned. Check BASIQ_API_KEY secret is set.');
+
+      // Open Basiq Consent UI in a popup
+      const popup = window.open(url, 'basiq-consent', 'width=560,height=760,scrollbars=yes,resizable=yes');
+
+      // Detect when user finishes (popup closes) then auto-sync
+      const poll = setInterval(() => {
+        try {
+          if (!popup || popup.closed) {
+            clearInterval(poll);
+            setBasiqConnecting(false);
+            toast('Bank connected! Syncing transactions…');
+            syncBasiq();
+          }
+        } catch(e) { /* cross-origin access error is expected — ignore */ }
+      }, 800);
+    } catch(e) {
+      toast('Connect failed: ' + e.message);
+      setBasiqConnecting(false);
+    }
+  }
+
+  async function syncBasiq(fromDate) {
+    setBasiqSyncing(true); setBasiqStatus(null);
+    try {
+      const res = await supabase.functions.invoke('basiq-sync', {
+        body: { orgId: org.id, ...(fromDate ? { fromDate } : {}) },
+      });
+      if (res.error) throw new Error(res.error.message ?? JSON.stringify(res.error));
+      const { accounts: n, transactions: tx } = res.data;
+      setBasiqStatus(tx);
+      toast(`Synced — ${tx.inserted} new transaction${tx.inserted !== 1 ? 's' : ''} across ${n} account${n !== 1 ? 's' : ''}.`);
+      setTimeout(() => window.location.reload(), 1000);
+    } catch(e) { toast('Sync failed: ' + e.message); }
+    setBasiqSyncing(false);
+  }
+
+  React.useEffect(() => {
+    if (new URLSearchParams(window.location.search).get('basiq') === 'done') {
+      window.history.replaceState({}, '', window.location.pathname);
+      syncBasiq();
+    }
+  }, []);
+
+  async function connectSandbox() {
+    setBasiqSyncing(true); setBasiqStatus(null);
+    try {
+      toast('Connecting sandbox bank (Hooli Bank)…');
+      // Step 1: create the sandbox connection
+      const connectRes = await supabase.functions.invoke('basiq-sandbox-connect', {
+        body: { orgId: org.id, loginId: 'gavinBelson', password: 'hooli2016', institution: 'AU00000' },
+      });
+      if (connectRes.error) throw new Error(connectRes.error.message ?? JSON.stringify(connectRes.error));
+      const { status, jobId } = connectRes.data;
+      if (status === 'failed') throw new Error('Sandbox connection job failed. Check Basiq dashboard logs.');
+
+      // Step 2: sync transactions
+      toast('Connected! Syncing transactions…');
+      const syncRes = await supabase.functions.invoke('basiq-sync', {
+        body: { orgId: org.id },
+      });
+      if (syncRes.error) throw new Error(syncRes.error.message ?? JSON.stringify(syncRes.error));
+      const { transactions: tx, accounts: n } = syncRes.data;
+      setBasiqStatus(tx);
+      toast(`Sandbox sync complete — ${tx.inserted} transactions across ${n} account${n!==1?'s':''}.`);
+      setTimeout(() => window.location.reload(), 1000);
+    } catch(e) { toast('Sandbox connect failed: ' + e.message); }
+    setBasiqSyncing(false);
+  }
   const accounts = _accts || [];
   const txnsList = txns  || [];
 
@@ -139,8 +221,28 @@ export function BankAccounts({ onNavigate }) {
 
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:14 }}>
         <p style={{ fontSize:12, color:'var(--stone)' }}>Drag to reorder · Click a card to view transactions</p>
-        <button className="btn btn-a" onClick={openNew}>+ Add account</button>
+        <div style={{ display:'flex', gap:6 }}>
+          <button className="btn btn-sm" onClick={connectBasiq} disabled={basiqConnecting}
+            style={{ display:'flex', alignItems:'center', gap:5 }}>
+            {basiqConnecting ? '⏳ Connecting…' : '🏦 Connect bank'}
+          </button>
+          <button className="btn btn-sm" onClick={connectSandbox} disabled={basiqSyncing}
+            title="Connect Basiq sandbox (test data — Hooli Bank)" style={{ opacity:0.75 }}>
+            {basiqSyncing ? '⏳ Syncing…' : '🧪 Sandbox test'}
+          </button>
+          {org?.basiq_user_id && (
+            <button className="btn btn-sm" onClick={()=>syncBasiq()} disabled={basiqSyncing} title="Re-sync transactions from Basiq">
+              {basiqSyncing ? '⏳ Syncing…' : '↻ Sync now'}
+            </button>
+          )}
+          <button className="btn btn-a btn-sm" onClick={openNew}>+ Add account</button>
+        </div>
       </div>
+      {basiqStatus && (
+        <div style={{ marginBottom:12, padding:'8px 12px', background:'var(--al)', borderRadius:'var(--rr)', fontSize:12, color:'var(--a2)' }}>
+          ✓ Sync complete — <strong>{basiqStatus.inserted}</strong> new, <strong>{basiqStatus.skipped}</strong> already imported
+        </div>
+      )}
 
       {accounts.length === 0 ? (
         <div className="card" style={{ textAlign:'center', padding:40 }}>

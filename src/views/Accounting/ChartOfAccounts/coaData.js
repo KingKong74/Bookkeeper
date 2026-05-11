@@ -1,0 +1,113 @@
+/**
+ * views/Accounting/ChartOfAccounts/coaData.js
+ * Pure static data — COA templates and display constants.
+ * No functions, no side effects.
+ */
+
+export const COA_PERSONAL = [
+  { code:'110', label:'Cheque / Transaction Account', type:'asset',     group:'Current Assets',          colour:'#185FA5' },
+  { code:'120', label:'Savings Account',               type:'asset',     group:'Current Assets',          colour:'#3B6D11' },
+  { code:'200', label:'Investments',                   type:'asset',     group:'Investments',             colour:'#1D9E75' },
+  { code:'201', label:'Shares & ETFs',                 type:'asset',     group:'Investments',             colour:'#0C447C' },
+  { code:'220', label:'Superannuation',                type:'asset',     group:'Investments',             colour:'#085041' },
+  { code:'310', label:'Motor Vehicle',                 type:'asset',     group:'Fixed Assets',            colour:'#185FA5' },
+  { code:'400', label:'Credit Card',                   type:'liability', group:'Current Liabilities',     colour:'#A32D2D' },
+  { code:'510', label:'Home Loan / Mortgage',          type:'liability', group:'Non-Current Liabilities', colour:'#993C1D' },
+  { code:'540', label:'HELP / HECS Debt',              type:'liability', group:'Non-Current Liabilities', colour:'#7F77DD' },
+  { code:'600', label:"Owner's Equity",                type:'equity',    group:'Equity',                  colour:'#534AB7' },
+  { code:'620', label:'Drawings',                      type:'equity',    group:'Equity',                  colour:'#5F5E5A' },
+  { code:'710', label:'Salary & Wages',                type:'income',    group:'Revenue',                 colour:'#3B6D11' },
+  { code:'740', label:'Rental Income',                 type:'income',    group:'Revenue',                 colour:'#639922' },
+  { code:'750', label:'Interest Received',             type:'income',    group:'Revenue',                 colour:'#1D9E75' },
+  { code:'760', label:'Dividend Income',               type:'income',    group:'Revenue',                 colour:'#085041' },
+  { code:'790', label:'Other Income',                  type:'income',    group:'Revenue',                 colour:'#888780' },
+  { code:'801', label:'Rent / Mortgage',               type:'expense',   group:'Housing',                 colour:'#993C1D' },
+  { code:'811', label:'Electricity',                   type:'expense',   group:'Utilities',               colour:'#854F0B' },
+  { code:'814', label:'Internet',                      type:'expense',   group:'Utilities',               colour:'#185FA5' },
+  { code:'815', label:'Mobile Phone',                  type:'expense',   group:'Utilities',               colour:'#0C447C' },
+  { code:'820', label:'Groceries',                     type:'expense',   group:'Living Expenses',         colour:'#BA7517' },
+  { code:'821', label:'Dining & Takeaway',             type:'expense',   group:'Living Expenses',         colour:'#D85A30' },
+  { code:'831', label:'Fuel & Oil',                    type:'expense',   group:'Vehicle',                 colour:'#3B6D11' },
+  { code:'832', label:'Registration & Insurance',      type:'expense',   group:'Vehicle',                 colour:'#0F6E56' },
+  { code:'836', label:'Ride Share',                    type:'expense',   group:'Transport',               colour:'#0C447C' },
+  { code:'843', label:'Gym & Fitness',                 type:'expense',   group:'Health',                  colour:'#1D9E75' },
+  { code:'851', label:'Subscriptions',                 type:'expense',   group:'Entertainment',           colour:'#7F77DD' },
+  { code:'855', label:'Travel & Holidays',             type:'expense',   group:'Entertainment',           colour:'#D4537E' },
+  { code:'881', label:'Bank Fees & Charges',           type:'expense',   group:'Financial',               colour:'#5F5E5A' },
+  { code:'885', label:'Health Insurance',              type:'expense',   group:'Insurance',               colour:'#534AB7' },
+  { code:'891', label:'Income Tax',                    type:'expense',   group:'Tax',                     colour:'#A32D2D' },
+  { code:'893', label:'Super Contributions',           type:'expense',   group:'Superannuation',          colour:'#3B6D11' },
+  { code:'900', label:'Other Expenses',                type:'expense',   group:'Miscellaneous',           colour:'#888780' },
+];
+
+export const COA_COMPANY = [
+  { code:'110', label:'Bank – Operating',              type:'asset',     group:'Current Assets',          colour:'#185FA5' },
+  { code:'120', label:'Bank – Savings',                type:'asset',     group:'Current Assets',          colour:'#0C447C' },
+  { code:'101', label:'Petty Cash',                    type:'asset',     group:'Current Assets',          colour:'#3B6D11' },
+  { code:'140', label:'Accounts Receivable',           type:'asset',     group:'Current Assets',          colour:'#1D9E75' },
+  { code:'151', label:'GST Receivable',                type:'asset',     group:'Current Assets',          colour:'#639922' },
+  { code:'310', label:'Motor Vehicle',                 type:'asset',     group:'Fixed Assets',            colour:'#185FA5' },
+  { code:'320', label:'Office Equipment',              type:'asset',     group:'Fixed Assets',            colour:'#0C447C' },
+  { code:'330', label:'Computer Equipment',            type:'asset',     group:'Fixed Assets',            colour:'#3B6D11' },
+  { code:'390', label:'Accumulated Depreciation',      type:'asset',     group:'Fixed Assets',            colour:'#888780' },
+  { code:'410', label:'Accounts Payable',              type:'liability', group:'Current Liabilities',     colour:'#A32D2D' },
+  { code:'420', label:'GST Payable',                   type:'liability', group:'Current Liabilities',     colour:'#E24B4A' },
+  { code:'421', label:'PAYG Withholding Payable',      type:'liability', group:'Current Liabilities',     colour:'#993C1D' },
+  { code:'431', label:'Superannuation Payable',        type:'liability', group:'Current Liabilities',     colour:'#D85A30' },
+  { code:'422', label:'Income Tax Payable',            type:'liability', group:'Current Liabilities',     colour:'#BA7517' },
+  { code:'400', label:'Credit Card',                   type:'liability', group:'Current Liabilities',     colour:'#854F0B' },
+  { code:'550', label:'Business Loan',                 type:'liability', group:'Non-Current Liabilities', colour:'#633806' },
+  { code:'630', label:'Share Capital',                 type:'equity',    group:'Equity',                  colour:'#534AB7' },
+  { code:'610', label:'Retained Earnings',             type:'equity',    group:'Equity',                  colour:'#7F77DD' },
+  { code:'620', label:'Drawings',                      type:'equity',    group:'Equity',                  colour:'#5F5E5A' },
+  { code:'730', label:'Business Income',               type:'income',    group:'Revenue',                 colour:'#3B6D11' },
+  { code:'720', label:'Freelance / Contract',          type:'income',    group:'Revenue',                 colour:'#1D9E75' },
+  { code:'750', label:'Interest Received',             type:'income',    group:'Revenue',                 colour:'#639922' },
+  { code:'790', label:'Other Income',                  type:'income',    group:'Revenue',                 colour:'#888780' },
+  { code:'820', label:'Cost of Goods Sold',            type:'expense',   group:'Direct Costs',            colour:'#A32D2D' },
+  { code:'710', label:'Wages & Salaries',              type:'expense',   group:'Employee Costs',          colour:'#185FA5' },
+  { code:'893', label:'Superannuation Expense',        type:'expense',   group:'Employee Costs',          colour:'#0C447C' },
+  { code:'801', label:'Rent Expense',                  type:'expense',   group:'Occupancy',               colour:'#993C1D' },
+  { code:'810', label:'Utilities',                     type:'expense',   group:'Occupancy',               colour:'#854F0B' },
+  { code:'831', label:'Motor Vehicle Expenses',        type:'expense',   group:'Vehicle',                 colour:'#185FA5' },
+  { code:'815', label:'Telephone & Internet',          type:'expense',   group:'Communications',          colour:'#3B6D11' },
+  { code:'885', label:'Insurance',                     type:'expense',   group:'Insurance',               colour:'#534AB7' },
+  { code:'881', label:'Bank Charges',                  type:'expense',   group:'Financial',               colour:'#5F5E5A' },
+  { code:'870', label:'Accounting & Legal',            type:'expense',   group:'Professional',            colour:'#444441' },
+  { code:'851', label:'Subscriptions & Software',      type:'expense',   group:'Software',                colour:'#7F77DD' },
+  { code:'900', label:'Miscellaneous',                 type:'expense',   group:'Miscellaneous',           colour:'#888780' },
+];
+
+export const COA_TRUST = [
+  { code:'110', label:'Trust Bank Account',            type:'asset',     group:'Current Assets',          colour:'#185FA5' },
+  { code:'120', label:'Distribution Account',          type:'asset',     group:'Current Assets',          colour:'#0C447C' },
+  { code:'140', label:'Accounts Receivable',           type:'asset',     group:'Current Assets',          colour:'#1D9E75' },
+  { code:'200', label:'Trust Investments',             type:'asset',     group:'Investments',             colour:'#3B6D11' },
+  { code:'210', label:'Investment Property',           type:'asset',     group:'Investments',             colour:'#185FA5' },
+  { code:'410', label:'Accounts Payable',              type:'liability', group:'Current Liabilities',     colour:'#A32D2D' },
+  { code:'420', label:'GST Payable',                   type:'liability', group:'Current Liabilities',     colour:'#E24B4A' },
+  { code:'460', label:'Distributions Payable',         type:'liability', group:'Current Liabilities',     colour:'#993C1D' },
+  { code:'450', label:'Unpaid Present Entitlements',   type:'liability', group:'Current Liabilities',     colour:'#D85A30' },
+  { code:'530', label:'Beneficiary Loan Account',      type:'liability', group:'Non-Current Liabilities', colour:'#BA7517' },
+  { code:'640', label:'Trust Corpus',                  type:'equity',    group:'Trust Equity',            colour:'#534AB7' },
+  { code:'641', label:'Retained Trust Income',         type:'equity',    group:'Trust Equity',            colour:'#7F77DD' },
+  { code:'642', label:'Settlor Contribution',          type:'equity',    group:'Trust Equity',            colour:'#444441' },
+  { code:'760', label:'Trust Income – Dividends',      type:'income',    group:'Investment Income',       colour:'#3B6D11' },
+  { code:'740', label:'Trust Income – Rent',           type:'income',    group:'Investment Income',       colour:'#1D9E75' },
+  { code:'750', label:'Trust Income – Interest',       type:'income',    group:'Investment Income',       colour:'#639922' },
+  { code:'770', label:'Capital Gains',                 type:'income',    group:'Capital',                 colour:'#085041' },
+  { code:'790', label:'Other Trust Income',            type:'income',    group:'Revenue',                 colour:'#888780' },
+  { code:'870', label:'Trustee Fees',                  type:'expense',   group:'Trust Costs',             colour:'#A32D2D' },
+  { code:'873', label:'Accounting & Audit',            type:'expense',   group:'Professional',            colour:'#444441' },
+  { code:'872', label:'Legal Fees',                    type:'expense',   group:'Professional',            colour:'#5F5E5A' },
+  { code:'801', label:'Property Expenses',             type:'expense',   group:'Property',                colour:'#993C1D' },
+  { code:'881', label:'Bank Charges',                  type:'expense',   group:'Financial',               colour:'#888780' },
+  { code:'900', label:'Miscellaneous',                 type:'expense',   group:'Miscellaneous',           colour:'#888780' },
+];
+
+export const COA_TEMPLATES = { personal: COA_PERSONAL, company: COA_COMPANY, trust: COA_TRUST };
+
+export const TYPE_ORDER   = ['asset','liability','equity','income','expense'];
+export const TYPE_LABELS  = { asset:'Assets', liability:'Liabilities', equity:'Equity', income:'Revenue', expense:'Expenses' };
+export const TYPE_COLOURS = { asset:'#185FA5', liability:'#A32D2D', equity:'#534AB7', income:'#3B6D11', expense:'#BA7517' };
+export const TYPE_RANGES  = { asset:[100,399], liability:[400,599], equity:[600,699], income:[700,799], expense:[800,998] };

@@ -256,7 +256,7 @@ describe('AutoCatRules — save payload includes all valid DB columns', () => {
 
   it('source audit: index.jsx save() includes amt_exact in payload', async () => {
     const fs = await import('fs');
-    const src = fs.readFileSync(new URL('../views/Accounting/index.jsx', import.meta.url), 'utf-8');
+    const src = fs.readFileSync(new URL('../views/Accounting/AutoCatRules.jsx', import.meta.url), 'utf-8');
     const saveIdx = src.indexOf('async function save()');
     const saveBody = src.slice(saveIdx, saveIdx + 800);
     expect(saveBody).toContain('amt_exact:');
@@ -269,7 +269,7 @@ describe('AutoCatRules — save payload includes all valid DB columns', () => {
 describe('AutoCatRules source audit — all conditions saved (migration 014)', () => {
   it('index.jsx save() sends amt_exact, amt_min, amt_max, direction to DB', async () => {
     const fs = await import('fs');
-    const src = fs.readFileSync(new URL('../views/Accounting/index.jsx', import.meta.url), 'utf-8');
+    const src = fs.readFileSync(new URL('../views/Accounting/AutoCatRules.jsx', import.meta.url), 'utf-8');
     const saveIdx = src.indexOf('async function save()');
     const saveBody = src.slice(saveIdx, saveIdx + 800);
     expect(saveBody).toContain('amt_exact:');
@@ -295,14 +295,14 @@ describe('AutoCatRules source audit — all conditions saved (migration 014)', (
 describe('Transactions.jsx — state declaration audit', () => {
   it('bulkPayeeId is declared as useState', async () => {
     const fs = await import('fs');
-    const src = fs.readFileSync(new URL('../views/Banking/Transactions.jsx', import.meta.url), 'utf-8');
+    const src = ['../views/Banking/Transactions/index.jsx','../views/Banking/Transactions/TransactionFilters.jsx','../views/Banking/Transactions/TransactionRow.jsx','../views/Banking/Transactions/InlineCatPicker.jsx','../views/Banking/Transactions/InlinePayeePicker.jsx','../views/Banking/Transactions/InlineDescEditor.jsx','../views/Banking/Transactions/DeleteToast.jsx','../views/Banking/Transactions/MakeRulePrompt.jsx','../views/Banking/Transactions/transactionHelpers.js'].map(p=>fs.readFileSync(new URL(p,import.meta.url),'utf-8')).join('\n');
     expect(src).toContain('const [bulkPayeeId');
     expect(src).toContain('setBulkPayeeId');
   });
 
   it('bulkPayeeId declaration comes before its use in JSX', async () => {
     const fs = await import('fs');
-    const src = fs.readFileSync(new URL('../views/Banking/Transactions.jsx', import.meta.url), 'utf-8');
+    const src = ['../views/Banking/Transactions/index.jsx','../views/Banking/Transactions/TransactionFilters.jsx','../views/Banking/Transactions/TransactionRow.jsx','../views/Banking/Transactions/InlineCatPicker.jsx','../views/Banking/Transactions/InlinePayeePicker.jsx','../views/Banking/Transactions/InlineDescEditor.jsx','../views/Banking/Transactions/DeleteToast.jsx','../views/Banking/Transactions/MakeRulePrompt.jsx','../views/Banking/Transactions/transactionHelpers.js'].map(p=>fs.readFileSync(new URL(p,import.meta.url),'utf-8')).join('\n');
     const declIdx = src.indexOf('const [bulkPayeeId');
     const useIdx  = src.indexOf('value={bulkPayeeId}');
     expect(declIdx).toBeGreaterThan(-1);
@@ -312,7 +312,7 @@ describe('Transactions.jsx — state declaration audit', () => {
 
   it('bulkPayeeId is declared before the JSX return statement', async () => {
     const fs = await import('fs');
-    const src = fs.readFileSync(new URL('../views/Banking/Transactions.jsx', import.meta.url), 'utf-8');
+    const src = ['../views/Banking/Transactions/index.jsx','../views/Banking/Transactions/TransactionFilters.jsx','../views/Banking/Transactions/TransactionRow.jsx','../views/Banking/Transactions/InlineCatPicker.jsx','../views/Banking/Transactions/InlinePayeePicker.jsx','../views/Banking/Transactions/InlineDescEditor.jsx','../views/Banking/Transactions/DeleteToast.jsx','../views/Banking/Transactions/MakeRulePrompt.jsx','../views/Banking/Transactions/transactionHelpers.js'].map(p=>fs.readFileSync(new URL(p,import.meta.url),'utf-8')).join('\n');
     const txnStart  = src.indexOf('export function Transactions(');
     const declIdx   = src.indexOf('const [bulkPayeeId', txnStart);
     const returnIdx = src.indexOf('  return (', txnStart);

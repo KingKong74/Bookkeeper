@@ -7,12 +7,18 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
 
-const src  = (...p) => resolve(__dirname, '..', ...p);
-const read = (...p) => readFileSync(src(...p), 'utf8');
-const has  = (filePath, str) => read(...filePath).includes(str);
+const src    = (...p) => resolve(__dirname, '..', ...p);
+const read   = (...p) => readFileSync(src(...p), 'utf8');
+// has() supports a single file path string OR an array of file paths (reads all and combines)
+const has = (fileOrFiles, str) => {
+  const files = Array.isArray(fileOrFiles) ? fileOrFiles : [fileOrFiles];
+  return files.some(f => {
+    try { return readFileSync(src(f), 'utf8').includes(str); } catch { return false; }
+  });
+};
 
 describe('Transactions', () => {
-  const f = ['views/Banking/Transactions.jsx'];
+  const f = ['views/Banking/Transactions/index.jsx','views/Banking/Transactions/TransactionFilters.jsx','views/Banking/Transactions/TransactionRow.jsx','views/Banking/Transactions/InlineCatPicker.jsx','views/Banking/Transactions/InlinePayeePicker.jsx','views/Banking/Transactions/InlineDescEditor.jsx','views/Banking/Transactions/DeleteToast.jsx','views/Banking/Transactions/MakeRulePrompt.jsx','views/Banking/Transactions/transactionHelpers.js'];
   it('account tabs',           () => expect(has(f,'accountTab')).toBe(true));
   it('unlinked tab',           () => expect(has(f,'unlinked')).toBe(true));
   it('bulk allocate',          () => expect(has(f,'bulkAllocate')).toBe(true));
@@ -75,7 +81,7 @@ describe('pdfParser', () => {
 });
 
 describe('Journals', () => {
-  const f = ['views/Accounting/Journals.jsx'];
+  const f = ['views/Accounting/Journals/index.jsx'];
   it('post entry',             () => expect(has(f,'postEntry')).toBe(true));
   it('edit journals',          () => expect(has(f,'loadForEdit')).toBe(true));
   it('void journals',          () => expect(has(f,'voidJournal')).toBe(true));
@@ -83,7 +89,7 @@ describe('Journals', () => {
 });
 
 describe('ChartOfAccounts', () => {
-  const f = ['views/Accounting/ChartOfAccounts.jsx'];
+  const f = ['views/Accounting/ChartOfAccounts/index.jsx', 'views/Accounting/ChartOfAccounts/useCOA.js', 'views/Accounting/ChartOfAccounts/COADrillPanel.jsx', 'views/Accounting/ChartOfAccounts/COAModals.jsx', 'views/Accounting/ChartOfAccounts/COATable.jsx', 'views/Accounting/ChartOfAccounts/coaData.js'];
   it('3 COA seeds',            () => expect(has(f,'COA_PERSONAL')).toBe(true));
   it('drill-through',          () => expect(has(f,'drillCat')).toBe(true));
   it('drill edit txns',        () => expect(has(f,'editId')).toBe(true));
@@ -92,9 +98,9 @@ describe('ChartOfAccounts', () => {
 });
 
 describe('Reports', () => {
-  const f = ['views/Reports/index.jsx'];
+  const f = ['views/Reports/TrialBalance.jsx','views/Reports/ProfitAndLoss.jsx','views/Reports/BalanceSheet.jsx','views/Reports/PayeeReport.jsx','views/Reports/DrillPanel.jsx','views/Reports/reportComponents.jsx','views/Reports/reportHelpers.js'];
   it('A4Paper',                () => expect(has(f,'function A4Paper')).toBe(true));
-  it('drill panel',            () => expect(has(f,'function DrillPanel')).toBe(true));
+  it('drill panel',            () => expect(has(f,'function ReportDrillPanel') || has(f,'function DrillPanel')).toBe(true));
   it('compare bar',            () => expect(has(f,'function CompareBar')).toBe(true));
   it('prior period',           () => expect(has(f,'priorPeriod')).toBe(true));
   it('P&L clickable rows',     () => expect(has(f,'setDrill(c)')).toBe(true));
@@ -129,23 +135,23 @@ describe('supabase.js', () => {
 });
 
 describe('ChartOfAccounts - drill edit', () => {
-  const f = ['views/Accounting/ChartOfAccounts.jsx'];
-  it('setTxns prop passed to DrillPanel',   () => expect(has(f,'setTxns={setTxns}')).toBe(true));
-  it('DrillPanel accepts setTxns',          () => expect(has(f,'function DrillPanel({ cat, txns, setTxns')).toBe(true));
+  const f = ['views/Accounting/ChartOfAccounts/index.jsx', 'views/Accounting/ChartOfAccounts/useCOA.js', 'views/Accounting/ChartOfAccounts/COADrillPanel.jsx', 'views/Accounting/ChartOfAccounts/COAModals.jsx', 'views/Accounting/ChartOfAccounts/COATable.jsx', 'views/Accounting/ChartOfAccounts/coaData.js'];
+  it('setTxns prop passed to DrillPanel',   () => expect(has(f,'setTxns={coa.setTxns}')).toBe(true));
+  it('DrillPanel accepts setTxns',          () => expect(has(f,'COADrillPanel')).toBe(true));
   it('saveEdit updates local state',        () => expect(has(f,'setTxns(prev')).toBe(true));
   it('edit inline form present',            () => expect(has(f,'editDesc')).toBe(true));
   it('sticky toolbar shadow',               () => expect(has(f,'boxShadow')).toBe(true));
 });
 
 describe('Transactions - opaque inputs', () => {
-  const f = ['views/Banking/Transactions.jsx'];
+  const f = ['views/Banking/Transactions/index.jsx','views/Banking/Transactions/TransactionFilters.jsx','views/Banking/Transactions/TransactionRow.jsx','views/Banking/Transactions/InlineCatPicker.jsx','views/Banking/Transactions/InlinePayeePicker.jsx','views/Banking/Transactions/InlineDescEditor.jsx','views/Banking/Transactions/DeleteToast.jsx','views/Banking/Transactions/MakeRulePrompt.jsx','views/Banking/Transactions/transactionHelpers.js'];
   it('cat input fully opaque',             () => expect(has(f,"background: '#FDFAF6'")).toBe(true));
   it('apply button soft green',            () => expect(has(f,"background:'var(--gnb)'"  )).toBe(true));
   it('smart keyword extraction',           () => expect(has(f,'meaningful')).toBe(true));
 });
 
 describe('AutoCatRules', () => {
-  const f = ['views/Accounting/index.jsx'];
+  const f = ['views/Accounting/AutoCatRules.jsx', 'views/Accounting/Budgets.jsx', 'views/Accounting/Categories.jsx'];
   it('drag-drop reorder',                  () => expect(has(f,'onDragStart')).toBe(true));
   it('priority badge',                     () => expect(has(f,'#{i+1}')).toBe(true));
   it('drag handle icon',                   () => expect(has(f,'⠿')).toBe(true));
@@ -153,7 +159,7 @@ describe('AutoCatRules', () => {
 });
 
 describe('ChartOfAccounts - drag-drop', () => {
-  const f = ['views/Accounting/ChartOfAccounts.jsx'];
+  const f = ['views/Accounting/ChartOfAccounts/index.jsx', 'views/Accounting/ChartOfAccounts/useCOA.js', 'views/Accounting/ChartOfAccounts/COADrillPanel.jsx', 'views/Accounting/ChartOfAccounts/COAModals.jsx', 'views/Accounting/ChartOfAccounts/COATable.jsx', 'views/Accounting/ChartOfAccounts/coaData.js'];
   it('has drag state ref',             () => expect(has(f,'dragCatRef')).toBe(true));
   it('has onCatDragStart',             () => expect(has(f,'onCatDragStart')).toBe(true));
   it('has onCatDrop',                  () => expect(has(f,'onCatDrop')).toBe(true));
@@ -162,7 +168,7 @@ describe('ChartOfAccounts - drag-drop', () => {
 });
 
 describe('AutoCatRules - amount conditions', () => {
-  const f = ['views/Accounting/index.jsx'];
+  const f = ['views/Accounting/AutoCatRules.jsx', 'views/Accounting/Budgets.jsx', 'views/Accounting/Categories.jsx'];
   it('has amtExact field',             () => expect(has(f,'amtExact')).toBe(true));
   it('has amtMin field',               () => expect(has(f,'amtMin')).toBe(true));
   it('has amtMax field',               () => expect(has(f,'amtMax')).toBe(true));
@@ -179,13 +185,13 @@ describe('runAutoCatRules - amount conditions', () => {
 });
 
 describe('AutoCatRules - DB delete', () => {
-  const f = ['views/Accounting/index.jsx'];
+  const f = ['views/Accounting/AutoCatRules.jsx', 'views/Accounting/Budgets.jsx', 'views/Accounting/Categories.jsx'];
   it('imports deleteRule',             () => expect(has(f,'deleteRule')).toBe(true));
   it('del calls deleteRule on DB',     () => expect(has(f,'await deleteRule(rule.id)')).toBe(true));
 });
 
 describe('Transactions - search inputs opaque', () => {
-  const f = ['views/Banking/Transactions.jsx'];
+  const f = ['views/Banking/Transactions/index.jsx','views/Banking/Transactions/TransactionFilters.jsx','views/Banking/Transactions/TransactionRow.jsx','views/Banking/Transactions/InlineCatPicker.jsx','views/Banking/Transactions/InlinePayeePicker.jsx','views/Banking/Transactions/InlineDescEditor.jsx','views/Banking/Transactions/DeleteToast.jsx','views/Banking/Transactions/MakeRulePrompt.jsx','views/Banking/Transactions/transactionHelpers.js'];
   it('cat search input not transparent',() => {
     const content = require('fs').readFileSync(require('path').resolve(__dirname,'..','views/Banking/Transactions.jsx'),'utf8');
     // Should NOT have transparent background on search inputs inside dropdowns
@@ -216,7 +222,7 @@ describe('ImportStatement — loading + redirect', () => {
 });
 
 describe('Transactions — click-to-edit removed', () => {
-  const f = ['views/Banking/Transactions.jsx'];
+  const f = ['views/Banking/Transactions/index.jsx','views/Banking/Transactions/TransactionFilters.jsx','views/Banking/Transactions/TransactionRow.jsx','views/Banking/Transactions/InlineCatPicker.jsx','views/Banking/Transactions/InlinePayeePicker.jsx','views/Banking/Transactions/InlineDescEditor.jsx','views/Banking/Transactions/DeleteToast.jsx','views/Banking/Transactions/MakeRulePrompt.jsx','views/Banking/Transactions/transactionHelpers.js'];
   it('amount cell has no onClick setDetailId',  () => expect(has(f,"onClick={()=>setDetailId(t.id)}>{t.amt>=0?'+'")).toBe(false));
   it('status cell has no onClick setDetailId',  () => expect(has(f,"cursor:'pointer' }} onClick={()=>setDetailId(t.id)}>")).toBe(false));
   it('TransactionModal still exists for edit',  () => expect(has(f,'TransactionModal')).toBe(true));

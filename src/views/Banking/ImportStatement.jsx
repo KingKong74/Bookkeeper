@@ -8,7 +8,8 @@ import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { useApp } from '../../context/AppContext';
 import { parseCSVText, autoDetectColumns, buildTransactions } from '../../utils/csvParser';
 import { parsePDF } from '../../utils/pdfParser';
-import { bulkImportTransactions, upsertPayee, updateBankAccount, getTransactions, createRule, savePendingSuggestions } from '../../lib/supabase';
+import { bulkImportTransactions, updateBankAccount, getTransactions, createRule, savePendingSuggestions } from '../../lib/supabase';
+import { upsertPayee } from '../../services/categoryService';
 import { fmt, analyseImportedTransactions, extractPayeeCandidate, estimateCategoryForMerchant } from '../../utils/helpers';
 import { extractMerchantName } from '../../utils/merchant.js';
 
@@ -269,7 +270,7 @@ function calcRecon(pf, excludedKeys) {
 }
 
 export function ImportStatement({ onNavigate }) {
-  const { txns, catMap, cats, setCats, rules, setRules, payees, setPayees, setTxns, toast, org, accounts: _accts, setAccounts, PALETTE, merchantHints, orgSettings } = useApp();
+  const { txns, catMap, cats, rules, setRules, payees, setPayees, setTxns, toast, org, accounts: _accts, setAccounts, PALETTE } = useApp();
   const accounts = _accts || [];
 
   const [step,            setStep]           = useState('upload');   // 'upload' | 'review'

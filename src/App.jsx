@@ -45,6 +45,12 @@ export default function App() {
     refreshData,
   } = useApp();
 
+  // Apply saved theme immediately on mount — before any render
+  useEffect(() => {
+    const dark = localStorage.getItem('pref_dark_mode') === 'true';
+    document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+  }, []);
+
   const [view, setView] = useState('dashboard');
   const [defaultAccountTab, setDefaultAccountTab] = useState(null);
 
