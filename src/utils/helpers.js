@@ -403,6 +403,25 @@ export function buildBSFromJournals(journals, dateFrom, dateTo, catMap, accountM
   const catBalances  = {};  // category-based accounts
   const bankBalances = {};  // bank account lines
 
+  // ── Seed bank account opening balances ──
+  // Opening balance represents the account value BEFORE any transactions.
+  // For assets (checking/savings): positive = you have money → seeds as DR
+  // For liabilities (CC/loan): opening_balance stored as the amount OWED (positive = owed)
+  //   so seeds as CR on the liability side.
+  Object.values(accountMap).forEach(acct => {
+    const ob = parseFloat(acct.opening_balance) || 0;
+    if (ob === 0) return;
+    const isLiab = acct.type === 'credit_card' || acct.type === 'loan';
+    if (!bankBalances[acct.id]) bankBalances[acct.id] = { ...acct, dr: 0, cr: 0, type: acct.type };
+    if (isLiab) {
+      // CC/loan: opening balance is money owed → credit side (liability increases on CR)
+      bankBalances[acct.id].cr += Math.abs(ob);
+    } else {
+      // Asset: opening balance is money held → debit side (asset increases on DR)
+      bankBalances[acct.id].dr += ob;
+    }
+  });
+
   (journals || []).forEach(journal => {
     // Balance Sheet is CUMULATIVE (all time to dateTo), so only filter by dateTo
     if (!journal?.date || journal.date > dateTo) return;
