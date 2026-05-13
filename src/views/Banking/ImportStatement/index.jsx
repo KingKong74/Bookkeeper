@@ -41,12 +41,13 @@ export function ImportStatement({ onNavigate, initialParsedFiles = null, onClear
   const fileRowRefs = useRef({});
 
   // When launched from sandbox/bank sync, jump straight to review with pre-loaded files
+  // NOTE: we do NOT call onClearInitial here — the data stays in sessionStorage until
+  // the import is completed or reset, so navigating away and back restores the review screen.
   React.useEffect(() => {
     if (initialParsedFiles && initialParsedFiles.length > 0) {
       setParsedFiles(initialParsedFiles);
       setExcluded(new Set());
       setStep('review');
-      if (onClearInitial) onClearInitial(); // clear so back-nav works normally
     }
   }, []); // run once on mount only
 
@@ -131,7 +132,7 @@ export function ImportStatement({ onNavigate, initialParsedFiles = null, onClear
     setExcluded(p => { const n = new Set(p); if (allEx) keys.forEach(k => n.delete(k)); else keys.forEach(k => n.add(k)); return n; });
   }
   function toggleAll(on)   { setExcluded(on ? new Set() : new Set(allTransactions.map(t => t._key))); }
-  function reset()         { setStep('upload'); setParsedFiles([]); setExcluded(new Set()); setNewPayeesFound([]); }
+  function reset()         { setStep('upload'); setParsedFiles([]); setExcluded(new Set()); setNewPayeesFound([]); try { sessionStorage.removeItem('moniqr_pending_import'); } catch {} if (onClearInitial) onClearInitial(); }
   function removeFile(fi)  {
     const keys = new Set((fileTransactions[fi] || []).map(t => t._key));
     setParsedFiles(prev => prev.filter((_, i) => i !== fi));
@@ -250,6 +251,9 @@ export function ImportStatement({ onNavigate, initialParsedFiles = null, onClear
       const intelSugs = Object.values(autoCatMap).filter(s => s.fromIntel && s.sugCat);
       if (intelSugs.length) savePendingSuggestions(org.id, intelSugs).catch(() => {});
 
+      // Clear persisted import data after successful completion
+      try { sessionStorage.removeItem('moniqr_pending_import'); } catch {}
+      if (onClearInitial) onClearInitial();
       onNavigate('transactions');
     } catch (e) { toast('Import failed: ' + e.message); }
     finally { setLoading(false); }

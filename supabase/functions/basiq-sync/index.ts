@@ -87,8 +87,9 @@ function normaliseBasiqTxn(bt: any, bankAccountId: string, orgId: string): objec
     description:  bt.description ?? '',
     amount:       parseFloat(bt.amount ?? '0'),
     import_hash:  `basiq:${bt.id}`,
-    basiq_txn_id: bt.id,
-    imported:     true,   // marks as bank-feed (not manually entered)
+    basiq_txn_id:   bt.id,
+    post_datetime:  bt.postDate ?? bt.transactionDate ?? null,  // full ISO datetime for intraday ordering
+    imported:       true,   // marks as bank-feed (not manually entered)
   };
 }
 

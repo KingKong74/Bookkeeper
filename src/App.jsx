@@ -48,7 +48,21 @@ export default function App() {
   }, []);
 
   const [view, setView] = useState('dashboard');
-  const [sandboxParsedFiles, setSandboxParsedFiles] = useState(null); // pre-parsed files from sandbox/bank sync
+  // sandboxParsedFiles persists across navigation within session (sessionStorage).
+  // Cleared on page reload. Allows user to leave import screen and come back.
+  const [sandboxParsedFiles, _setSandboxParsedFiles] = useState(() => {
+    try {
+      const saved = sessionStorage.getItem('moniqr_pending_import');
+      return saved ? JSON.parse(saved) : null;
+    } catch { return null; }
+  });
+  function setSandboxParsedFiles(pf) {
+    _setSandboxParsedFiles(pf);
+    try {
+      if (pf) sessionStorage.setItem('moniqr_pending_import', JSON.stringify(pf));
+      else     sessionStorage.removeItem('moniqr_pending_import');
+    } catch {}
+  }
   const [defaultAccountTab, setDefaultAccountTab] = useState(null);
   const [isPending, startTransition] = useTransition();
 
@@ -64,8 +78,9 @@ export default function App() {
   const adapted      = (transactions || []).map(t => ({ ...t, cat: t.category_id, desc: t.description }));
   const adaptedRules = (rules || []).map(r => ({ ...r, catId: r.category_id }));
   const ft           = filterByDateRange(adapted, dateFrom, dateTo);
-  const unallocated  = ft.filter(t => !t.cat).length;
-  const unlinked     = ft.filter(t => !t.account_id).length;
+  // Sidebar badges count ALL transactions (not date-filtered) — show true pending work
+  const unallocated  = adapted.filter(t => !t.cat).length;
+  const unlinked     = adapted.filter(t => !t.account_id).length;
   const suggestions  = runAutoCatRules(adapted, adaptedRules).length;
   const periodLabel  = typeof fyMode === 'number' ? fyLabel(fyMode) : dateRangeLabel(dateFrom, dateTo);
 
@@ -186,7 +201,7 @@ function Splash({ text }) {
   return (
     <div style={{ minHeight:'100vh', display:'flex', alignItems:'center', justifyContent:'center', background:'var(--sand)' }}>
       <div style={{ textAlign:'center' }}>
-        <div style={{ width:24, height:24, background:'#BA7517', transform:'rotate(45deg)', borderRadius:3, margin:'0 auto 14px', opacity:0.8 }} />
+        <div style={{ width:24, height:24, background:'var(--a)', transform:'rotate(45deg)', borderRadius:3, margin:'0 auto 14px', opacity:0.8 }} />
         <p style={{ fontSize:13, color:'var(--stone)' }}>{text}</p>
       </div>
     </div>

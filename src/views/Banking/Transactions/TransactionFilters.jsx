@@ -29,6 +29,7 @@ export function TransactionFilters({
   bulkAllocate, bulkAssignBank,
   setShowAdd,
   allTxns,
+  totalCount,
   baseFtCount,
   compactView, setCompactView,
   showFilter, setShowFilter,
@@ -68,7 +69,8 @@ export function TransactionFilters({
     return () => document.removeEventListener('mousedown', onOut);
   }, [showFilter, setShowFilter]);
 
-  const totalTxnCount = (allTxns || txns || []).length;
+  // totalCount is explicitly passed from Transactions/index.jsx = txns.length from context
+  const totalTxnCount = totalCount ?? (allTxns || txns || []).length;
   const hasDateFilter = !!(localDateFrom && localDateTo);
 
   // Selected account info
@@ -247,7 +249,7 @@ export function TransactionFilters({
           {[
             ['uncategorised', 'Reconcile',           ua,             true],
             ['categorised',   'Bank Statements',      null,           false],
-            ['all',           'Account Transactions', baseFtCount ?? totalTxnCount, false],
+            ['all',           'Account Transactions', totalTxnCount, false],
           ].map(([val, label, count, isRed]) => (
             <button key={val} onClick={() => { setAllocTab(val); clearSel(); }}
               className={`alloc-tab${allocTab === val ? ' alloc-tab--active' : ''}`}>

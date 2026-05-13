@@ -471,3 +471,108 @@ describe('A4Paper — reactive theme icon', () => {
     expect(fn).toContain("attributeFilter: ['data-theme']");
   });
 });
+
+// ── Running balance — same-day ordering ───────────────────────────────────────
+describe('running balance — same-day ordering (bank statement convention)', () => {
+  // Credits post LAST chronologically within a day.
+  // Balance computation: debit first, credit last (oldest → newest).
+  // Display: newest first → credit appears at TOP within same day.
+
+  function computeRunningBalances(txns, ob) {
+    // Mirrors the logic in Transactions/index.jsx runningBal
+    const ordered = [...txns].sort((a, b) => {
+      const d = a.date.localeCompare(b.date);
+      if (d !== 0) return d;
+      const aIsCredit = (a.amt ?? 0) > 0, bIsCredit = (b.amt ?? 0) > 0;
+      if (aIsCredit !== bIsCredit) return aIsCredit ? 1 : -1; // debit first
+      return 0;
+    });
+    let running = ob;
+    const map = {};
+    ordered.forEach(t => { running += t.amt; map[t.id] = running; });
+    return map;
+  }
+
+  it('debit processed before credit on same day', () => {
+    const txns = [
+      { id: 'pay1', date: '2026-03-27', amt: 3733.95 },  // credit (payment)
+      { id: 'alh1', date: '2026-03-27', amt: -22.98 },   // debit (spend)
+    ];
+    const map = computeRunningBalances(txns, -6411.26);
+    // Debit first: -6411.26 - 22.98 = -6434.24, then credit: -6434.24 + 3733.95 = -2700.29
+    // BUT bank convention: debit first, credit last
+    // So alh1 processes first, pay1 last
+    expect(map['alh1']).toBeCloseTo(-6411.26 - 22.98, 1); // debit first
+    expect(map['pay1']).toBeCloseTo(-6411.26 - 22.98 + 3733.95, 1); // credit last
+  });
+
+  it('balance after credit on same day is higher than balance after debit', () => {
+    const txns = [
+      { id: 'pay1', date: '2026-03-27', amt: 3733.95 },
+      { id: 'alh1', date: '2026-03-27', amt: -22.98 },
+    ];
+    const map = computeRunningBalances(txns, -6411.26);
+    // Payment is last (chronologically), so its balance is highest
+    expect(map['pay1']).toBeGreaterThan(map['alh1']);
+  });
+
+  it('cross-day ordering is unaffected', () => {
+    const txns = [
+      { id: 'a', date: '2026-03-26', amt: -29.99 },  // Mar 26
+      { id: 'b', date: '2026-03-27', amt: -22.98 },  // Mar 27 debit
+      { id: 'c', date: '2026-03-27', amt: 3733.95 }, // Mar 27 credit (last of day)
+    ];
+    const map = computeRunningBalances(txns, -6411.26);
+    // Mar 26: -6411.26 - 29.99 = -6441.25
+    expect(map['a']).toBeCloseTo(-6411.26 - 29.99, 1);
+    // Mar 27 debit: -6441.25 - 22.98
+    expect(map['b']).toBeCloseTo(-6411.26 - 29.99 - 22.98, 1);
+    // Mar 27 credit: above + 3733.95
+    expect(map['c']).toBeCloseTo(-6411.26 - 29.99 - 22.98 + 3733.95, 1);
+  });
+
+  it('two debits on same day use created_at order', () => {
+    const txns = [
+      { id: 'd1', date: '2026-03-27', amt: -10, created_at: '2026-03-27T09:00:00' },
+      { id: 'd2', date: '2026-03-27', amt: -20, created_at: '2026-03-27T15:00:00' },
+    ];
+    const map = computeRunningBalances(txns, 100);
+    expect(map['d1']).toBeCloseTo(90, 1);  // first debit
+    expect(map['d2']).toBeCloseTo(70, 1);  // second debit
+  });
+});
+
+// ── App.jsx sidebar badge counts ─────────────────────────────────────────────
+describe('App.jsx sidebar badge — counts all transactions not FY-filtered', () => {
+  it('unallocated badge uses adapted (all txns) not ft (date-filtered)', () => {
+    const fs = require('fs'), path = require('path');
+    const src = fs.readFileSync(path.join(process.cwd(), 'src/App.jsx'), 'utf-8');
+
+    // Find where unallocated is computed
+    const unallocLine = src.split('\n').find(l => l.includes('const unallocated'));
+    expect(unallocLine).toBeTruthy();
+    // Must use adapted (all txns), not ft (date-filtered)
+    expect(unallocLine).toContain('adapted');
+    expect(unallocLine).not.toContain('ft.filter');
+  });
+
+  it('unlinked badge uses adapted not ft', () => {
+    const fs = require('fs'), path = require('path');
+    const src = fs.readFileSync(path.join(process.cwd(), 'src/App.jsx'), 'utf-8');
+
+    const unlinkedLine = src.split('\n').find(l => l.includes('const unlinked'));
+    expect(unlinkedLine).toBeTruthy();
+    expect(unlinkedLine).toContain('adapted');
+    expect(unlinkedLine).not.toContain('ft.filter');
+  });
+
+  it('ft (date-filtered) is still computed for period-specific UI but not used for badges', () => {
+    const fs = require('fs'), path = require('path');
+    const src = fs.readFileSync(path.join(process.cwd(), 'src/App.jsx'), 'utf-8');
+    // ft still exists for other uses (period label, etc.)
+    expect(src).toContain('filterByDateRange(adapted, dateFrom, dateTo)');
+    // but badges use adapted
+    expect(src).toContain('adapted.filter(t => !t.cat).length');
+    expect(src).toContain('adapted.filter(t => !t.account_id).length');
+  });
+});

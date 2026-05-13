@@ -199,50 +199,62 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
     else                          { av = a.date || '';  bv = b.date || ''; }
     if (av < bv) return sortDir === 'asc' ? -1 : 1;
     if (av > bv) return sortDir === 'asc' ? 1 : -1;
+    // Same-day tiebreaker: use post_datetime (exact Basiq posting time) if available.
+    // This gives us true intraday chronological order from the bank.
+    const pa = a.post_datetime || '', pb = b.post_datetime || '';
+    if (pa && pb && pa !== pb) {
+      return sortDir === 'asc' ? pa.localeCompare(pb) : pb.localeCompare(pa);
+    }
+    // Fallback: credits post LAST chronologically = FIRST in desc display
+    const aIsCredit = (a.amt ?? 0) > 0, bIsCredit = (b.amt ?? 0) > 0;
+    if (aIsCredit !== bIsCredit) {
+      return sortDir === 'asc'
+        ? (aIsCredit ? 1 : -1)
+        : (aIsCredit ? -1 : 1);
+    }
     return 0;
   });
   if (typeof window !== 'undefined') window.__ledgerFt = ft;
-  const showBalance = allocTab === 'categorised'; // Balance column only on Bank Statements
+  const showBalance = allocTab === 'categorised' && !!accountTab && accountTab !== 'unlinked'; // Balance column only on Bank Statements for a single account
 
-  // Running balance: computed from ALL transactions for each account (not just the filtered set).
-  // This ensures the balance is correct even when viewing a filtered subset (Bank Statements tab).
-  // We compute the cumulative balance for every txn in allTxns, oldest→newest, then display
-  // the balance for each txn in ft by looking it up in the map.
+  // Running balance: computed directly from ft (the displayed rows) in display order.
+  // This guarantees the balance shown for each row matches exactly the order the user sees.
+  // ft is already sorted newest-first; we reverse it to walk oldest→newest.
+  // showBalance is only true when a single account is selected, so ft is already per-account.
   const runningBal = (() => {
-    if (!showBalance) return {};
+    if (!showBalance || !accountTab) return {};
+    const acct  = (accounts || []).find(a => a.id === accountTab);
+    if (!acct) return {};
+    const rawOb = parseFloat(acct.opening_balance) || 0;
+    const isCC  = acct.type === 'credit_card' || acct.type === 'loan';
+
+    // Walk oldest→newest (reverse of display order)
+    const oldest = [...ft].reverse();
+
+    // Determine starting balance before the first displayed transaction.
+    // We use ob as the starting point — it represents the account balance
+    // before we imported any transactions (Basiq ob = balance at sync time,
+    // but we treat it as the balance before the oldest txn we show).
+    // For CC: ob from Basiq is negative → abs(ob) = amount owed at start.
+    let running = isCC ? Math.abs(rawOb) : rawOb;
+
     const map = {};
-    // Group ALL txns by account (not just ft — so balance is correct even in filtered views)
-    const allByAcct = {};
-    (txns || []).forEach(t => {
-      if (!t.account_id) return;
-      if (!allByAcct[t.account_id]) allByAcct[t.account_id] = [];
-      allByAcct[t.account_id].push(t);
-    });
-    Object.entries(allByAcct).forEach(([acctId, acctTxns]) => {
-      const acct  = (accounts || []).find(a => a.id === acctId);
-      const ob    = parseFloat(acct?.opening_balance) || 0;
-      const isCC  = acct?.type === 'credit_card' || acct?.type === 'loan';
-      // Sort ALL account txns chronologically oldest first
-      const ordered = [...acctTxns].sort((a, b) => {
-        const d = a.date.localeCompare(b.date);
-        return d !== 0 ? d : (a.id < b.id ? -1 : 1); // stable secondary sort
-      });
-      let running = ob; // start from opening balance
-      ordered.forEach(t => {
-        const amt = t.amt ?? 0;
-        // CC: spending (negative amt) means more owed → running - amt (subtracting negative = adding)
-        // Asset: deposits positive, spending negative → running + amt
-        running = isCC ? running - amt : running + amt;
+    oldest.forEach(t => {
+      const amt = t.amt ?? 0;
+      if (isCC) {
+        // CC: spending (neg amt) → more owed; payment (pos) → less owed
+        running = running - amt;
+        map[t.id] = -running; // negative = liability convention (shows in brackets)
+      } else {
+        running += amt; // deposits +, spending -
         map[t.id] = running;
-      });
+      }
     });
-    // Mark any txn without an account as null
-    ft.forEach(t => { if (!(t.id in map)) map[t.id] = null; });
     return map;
   })();
 
   const ua            = baseFt.filter(t => !t.cat).length;
-  const unlinkedCount = useMemo(() => filterByDateRange(txns || [], dateFrom, dateTo).filter(t => !t.account_id).length, [txns, dateFrom, dateTo]);
+  const unlinkedCount = useMemo(() => (txns || []).filter(t => !t.account_id).length, [txns]);
 
   // ── Handlers ──────────────────────────────────────────────────────────────
   async function allocateCat(txnId, catId) {
@@ -450,7 +462,7 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
 
   return (
     <>
-      <div className="card" style={{ marginBottom: 0, borderBottomLeftRadius: 0, borderBottomRightRadius: 0, borderBottom: 'none', overflow: 'visible', minHeight: 120 }}>
+      <div className="card" style={{ marginBottom: 0, borderBottomLeftRadius: 0, borderBottomRightRadius: 0, borderBottom: 'none' }}>
         <TransactionFilters
           accounts={accounts} txns={txns} dateFrom={dateFrom} dateTo={dateTo}
           accountTab={accountTab} switchAccount={switchAccount} acctBalances={acctBalances} unlinkedCount={unlinkedCount}
@@ -467,6 +479,8 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
           bulkAllocate={bulkAllocate} bulkAssignBank={bulkAssignBank}
           setShowAdd={setShowAdd}
           allTxns={txns}
+          totalCount={txns?.length ?? 0}
+          totalCount={txns?.length ?? 0}
           baseFtCount={baseFt.length}
           compactView={compactView}
           setCompactView={setCompactView}

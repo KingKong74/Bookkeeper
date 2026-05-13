@@ -3,7 +3,7 @@
  * Single transaction table row — category, payee, description, amount, status.
  */
 import React from 'react';
-import { fmt } from '../../../utils/helpers';
+import { fmt, fmtAcct } from '../../../utils/helpers';
 import { InlineCatPicker }  from './InlineCatPicker';
 import { InlinePayeePicker } from './InlinePayeePicker';
 import { InlineDescEditor }  from './InlineDescEditor';
@@ -176,8 +176,8 @@ export function TransactionRow({
         {t.amt >= 0 ? fmt(t.amt) : ''}
       </td>
       {showBalance && (
-        <td className="tr" style={{ fontSize: 12, fontVariantNumeric: 'tabular-nums', color: runningBal == null ? 'var(--stone2)' : runningBal >= 0 ? 'var(--ink)' : 'var(--rd)', opacity: runningBal == null ? 0.4 : 1 }}>
-          {runningBal != null ? fmt(runningBal) : '—'}
+        <td className="tr" style={{ fontSize: 12, fontVariantNumeric: 'tabular-nums', color: runningBal == null ? 'var(--stone2)' : runningBal < -0.005 ? 'var(--rd)' : 'var(--ink)', opacity: runningBal == null ? 0.4 : 1 }}>
+          {runningBal != null ? fmtAcct(runningBal) : '—'}
         </td>
       )}
       {accountTab===null && (() => {

@@ -26,6 +26,10 @@ const typeInfo = v => ACCOUNT_TYPES.find(t => t.value === v) || ACCOUNT_TYPES[0]
 const fmtBal  = n => '$' + Math.abs(n).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 
 export function BankAccounts({ onNavigate, onSandboxReview }) {
+  // Check if there's a pending import waiting for review
+  const hasPendingImport = (() => {
+    try { return !!sessionStorage.getItem('moniqr_pending_import'); } catch { return false; }
+  })();
   const { accounts: _accts, setAccounts, txns, setTxns, org, toast, PALETTE } = useApp();
   const [basiqConnecting, setBasiqConnecting] = React.useState(false);
   const [basiqSyncing,    setBasiqSyncing]    = React.useState(false);
@@ -298,6 +302,18 @@ export function BankAccounts({ onNavigate, onSandboxReview }) {
 
   return (
     <div>
+      {/* Pending import banner */}
+      {hasPendingImport && (
+        <div style={{ marginBottom:14, padding:'12px 16px', background:'rgba(99,102,241,0.1)', borderRadius:'var(--rr)', border:'0.5px solid rgba(99,102,241,0.3)', display:'flex', alignItems:'center', justifyContent:'space-between', gap:12 }}>
+          <div>
+            <div style={{ fontSize:13, fontWeight:600, color:'var(--a2)', marginBottom:2 }}>📥 Pending import</div>
+            <div style={{ fontSize:12, color:'var(--stone2)' }}>You have bank transactions waiting for review. Complete the import before syncing again.</div>
+          </div>
+          <button className="btn btn-a btn-sm" onClick={() => onNavigate?.('import')} style={{ flexShrink:0 }}>
+            Review import →
+          </button>
+        </div>
+      )}
       {/* Setup hint */}
       {accounts.length === 0 && txnsList.length > 0 && (
         <div style={{ marginBottom:14, padding:'10px 14px', background:'var(--al)', borderRadius:'var(--rr)', fontSize:12, color:'var(--a2)', lineHeight:1.6 }}>
@@ -312,12 +328,16 @@ export function BankAccounts({ onNavigate, onSandboxReview }) {
             style={{ display:'flex', alignItems:'center', gap:5 }}>
             {basiqConnecting ? '⏳ Connecting…' : '🏦 Connect bank'}
           </button>
-          <button className="btn btn-sm" onClick={connectSandbox} disabled={basiqSyncing}
-            title="Connect Basiq sandbox (test data — Hooli Bank)" style={{ opacity:0.75 }}>
+          <button className="btn btn-sm" onClick={connectSandbox}
+            disabled={basiqSyncing || hasPendingImport}
+            title={hasPendingImport ? 'Complete your pending import first' : 'Connect Basiq sandbox (test data — Hooli Bank)'}
+            style={{ opacity: hasPendingImport ? 0.4 : 0.75 }}>
             {basiqSyncing ? '⏳ Syncing…' : '🧪 Sandbox test'}
           </button>
           {org?.basiq_user_id && (
-            <button className="btn btn-sm" onClick={()=>syncBasiq()} disabled={basiqSyncing} title="Re-sync transactions from Basiq">
+            <button className="btn btn-sm" onClick={()=>syncBasiq()}
+              disabled={basiqSyncing || hasPendingImport}
+              title={hasPendingImport ? 'Complete your pending import first' : 'Re-sync transactions from Basiq'}>
               {basiqSyncing ? '⏳ Syncing…' : '↻ Sync now'}
             </button>
           )}
