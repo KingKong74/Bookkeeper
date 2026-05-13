@@ -14,7 +14,7 @@ const BLANK = { ac:'', dr:'', cr:'' };
 function newForm() { return { date:new Date().toISOString().slice(0,10), desc:'', ref:'', lines:[{...BLANK}] }; }
 
 export function Journals() {
-  const { cats, journals, setJournals, txns, org, toast } = useApp();
+  const { cats, journals, setJournals, txns, accounts, org, toast } = useApp();
 
   // Refresh journals every time this view is mounted (so changes from other tabs show)
   // Refresh every time this view mounts — empty deps means "on every mount"
@@ -114,7 +114,7 @@ export function Journals() {
         </div>
       </div>)}
 
-      {tab==='ledger'&&(<div className="card" style={{ overflow:'hidden' }}><div className="ch"><h3>General Ledger</h3><p>Consolidated account balances across all journal entries</p></div><GeneralLedger journals={activeJournals} catMap={catMap} txns={txns}/></div>)}
+      {tab==='ledger'&&(<div className="card" style={{ overflow:'hidden' }}><div className="ch"><h3>General Ledger</h3><p>Consolidated account balances across all journal entries</p></div><GeneralLedger journals={activeJournals} catMap={catMap} txns={txns} accounts={accounts}/></div>)}
       {tab==='entries'&&(<div>
         <div className="card" style={{ marginBottom:12 }}>
           <div className="ch"><h3>Journal entries</h3><p>{activeJournals.filter(j=>j.source!=='reversal').length} active · {journals.filter(j=>j.status==='void').length} voided</p></div>

@@ -21,6 +21,15 @@ export function fmt(n) {
 }
 
 /**
+ * Format for P&L/BS report lines — negative always shown as ($ xxx)
+ * Matches fmtAcct but exported separately for clarity.
+ */
+export function fmtReport(n) {
+  const abs = '$' + Math.abs(n).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return n < -0.005 ? `(${abs})` : abs;
+}
+
+/**
  * Format a number with a +/− sign prefix.
  * e.g.  1200  →  "+ $1,200.00"
  *      -45.9  →  "− $45.90"
@@ -272,18 +281,22 @@ export function buildJournalLines(txn, category, bankAccount) {
 export function buildTBFromJournals(journals, dateFrom, dateTo, catMap, accountMap = {}) {
   const map = {};
 
-  const inRange = j => {
-    if (!j?.date) return false;
-    return j.date >= dateFrom && j.date <= dateTo;
-  };
+  const isAutoJournal = j => j?.source === 'auto_category';
 
   (journals || []).forEach(journal => {
-    if (!inRange(journal)) return;
-
     (journal.journal_lines || journal.lines || []).forEach(line => {
       const dr  = parseFloat(line.debit)  || 0;
       const cr  = parseFloat(line.credit) || 0;
       if (dr === 0 && cr === 0) return;
+
+      // For auto-category journals (master ledger), filter by the individual
+      // transaction date (line.txn_date) not the journal entry date — because
+      // all auto-category lines share one journal entry with a single creation date.
+      // For manual journals, use the journal entry date as authored.
+      const effectiveDate = isAutoJournal(journal)
+        ? (line.txn_date ?? journal.date)
+        : journal.date;
+      if (!effectiveDate || effectiveDate < dateFrom || effectiveDate > dateTo) return;
 
       // Resolve account from category or bank account
       let key, label, type, col;
@@ -296,17 +309,31 @@ export function buildTBFromJournals(journals, dateFrom, dateTo, catMap, accountM
         col   = cat.col;
       } else if (line.bank_account_id && accountMap[line.bank_account_id]) {
         const acct = accountMap[line.bank_account_id];
+        const isLiabAcct = acct.type === 'credit_card' || acct.type === 'loan';
         key   = `bank:${acct.id}`;
         label = acct.name;
-        type  = 'asset';
+        type  = isLiabAcct ? 'liability' : 'asset';
         col   = acct.colour || '#185FA5';
       } else {
-        // Fall back to account_name (suspense or old-style journals)
+        // Try matching account_name against known bank account names
         const name = line.account_name || 'Unknown';
-        key   = `name:${name}`;
-        label = name;
-        type  = name.toLowerCase().includes('suspense') ? 'asset' : 'expense';
-        col   = '#888780';
+        const nameLC = name.toLowerCase().trim();
+        const matchedAcct = Object.values(accountMap).find(a =>
+          a.name && a.name.toLowerCase().trim() === nameLC
+        );
+        if (matchedAcct) {
+          const isLiabAcct = matchedAcct.type === 'credit_card' || matchedAcct.type === 'loan';
+          key   = `bank:${matchedAcct.id}`;
+          label = matchedAcct.name;
+          type  = isLiabAcct ? 'liability' : 'asset';
+          col   = matchedAcct.colour || '#185FA5';
+        } else {
+          // True fallback: suspense or unknown
+          key   = `name:${name}`;
+          label = name;
+          type  = name.toLowerCase().includes('suspense') ? 'asset' : 'expense';
+          col   = '#888780';
+        }
       }
 
       const catObj = (line.category_id && catMap[line.category_id]) ? catMap[line.category_id] : null;
@@ -423,12 +450,20 @@ export function buildBSFromJournals(journals, dateFrom, dateTo, catMap, accountM
   });
 
   (journals || []).forEach(journal => {
-    // Balance Sheet is CUMULATIVE (all time to dateTo), so only filter by dateTo
-    if (!journal?.date || journal.date > dateTo) return;
+    // Balance Sheet is CUMULATIVE (all time to dateTo), so only filter by dateTo.
+    // For auto-category journals (master ledger), use line.txn_date for each line.
+    // We can't skip the whole journal here — process line by line below.
 
+    const isAutoJ = journal?.source === 'auto_category';
     (journal.journal_lines || journal.lines || []).forEach(line => {
       const dr = parseFloat(line.debit)  || 0;
       const cr = parseFloat(line.credit) || 0;
+
+      // Use txn_date for auto-category lines, journal.date for manual
+      const effectiveDate = isAutoJ
+        ? (line.txn_date ?? journal.date)
+        : journal.date;
+      if (!effectiveDate || effectiveDate > dateTo) return;
 
       if (line.category_id && catMap[line.category_id]) {
         const cat = catMap[line.category_id];
@@ -441,6 +476,17 @@ export function buildBSFromJournals(journals, dateFrom, dateTo, catMap, accountM
         if (!bankBalances[acct.id]) bankBalances[acct.id] = { ...acct, dr: 0, cr: 0, type: acct.type };
         bankBalances[acct.id].dr += dr;
         bankBalances[acct.id].cr += cr;
+      } else if (!line.bank_account_id && !line.category_id && line.account_name) {
+        // account_name fallback — try to match to a known bank account by name
+        const nameLC = (line.account_name || '').toLowerCase().trim();
+        const matchedAcct = Object.values(accountMap).find(a =>
+          a.name && a.name.toLowerCase().trim() === nameLC
+        );
+        if (matchedAcct) {
+          if (!bankBalances[matchedAcct.id]) bankBalances[matchedAcct.id] = { ...matchedAcct, dr: 0, cr: 0, type: matchedAcct.type };
+          bankBalances[matchedAcct.id].dr += dr;
+          bankBalances[matchedAcct.id].cr += cr;
+        }
       }
     });
   });

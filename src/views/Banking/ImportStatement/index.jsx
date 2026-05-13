@@ -179,7 +179,7 @@ export function ImportStatement({ onNavigate, initialParsedFiles = null, onClear
         }).filter(u => u.id); // safety: only update rows with a real id
 
         if (updates.length) {
-          // Approve in batches of 50
+          // Approve individual rows (with cat/payee updates) in batches of 50
           for (let i = 0; i < updates.length; i += 50) {
             const batch = updates.slice(i, i + 50);
             await Promise.all(batch.map(u =>
@@ -191,6 +191,15 @@ export function ImportStatement({ onNavigate, initialParsedFiles = null, onClear
             ));
           }
         }
+
+        // Bulk-approve ALL remaining pending rows for this org
+        // (catches any rows not shown in review due to pagination or prior sessions)
+        await supabase
+          .from('transactions')
+          .update({ pending_import: false })
+          .eq('org_id', org.id)
+          .eq('pending_import', true);
+
         parts = [`Approved ${updates.length} transaction${updates.length !== 1 ? 's' : ''} from bank feed`];
       } else {
         // File import: insert new transactions

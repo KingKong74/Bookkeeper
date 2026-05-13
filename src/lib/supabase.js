@@ -122,8 +122,9 @@ export async function getTransactions(orgId, from, to) {
   const PAGE = 1000;
   let all = [];
   let offset = 0;
+  let usePendingFilter = true;
   while (true) {
-    const { data, error } = await supabase
+    let q = supabase
       .from('transactions')
       .select(`
         *,
@@ -135,7 +136,16 @@ export async function getTransactions(orgId, from, to) {
       .lte('date', to)
       .order('date', { ascending: false })
       .range(offset, offset + PAGE - 1);
-    if (error) throw error;
+    if (usePendingFilter) q = q.eq('pending_import', false);
+    const { data, error } = await q;
+    if (error) {
+      // Graceful fallback if pending_import column doesn't exist yet
+      if (usePendingFilter && (error.code === 'PGRST204' || error.code === '42703' || error.message?.includes('pending_import'))) {
+        usePendingFilter = false;
+        continue;
+      }
+      throw error;
+    }
     if (!data || data.length === 0) break;
     all = all.concat(data);
     if (data.length < PAGE) break;

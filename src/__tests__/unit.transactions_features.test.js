@@ -266,10 +266,13 @@ describe('P&L StRow — sub-account indent values', () => {
     expect(subPad).toBeGreaterThan(56); // must be pushed further than before
   });
 
-  it('sub rows have paddingRight offset for value column', async () => {
+  it('sub rows use same font size as parent rows', async () => {
     const fs = await import('fs');
-    const src = ['../views/Reports/TrialBalance.jsx','../views/Reports/ProfitAndLoss.jsx','../views/Reports/BalanceSheet.jsx','../views/Reports/PayeeReport.jsx','../views/Reports/DrillPanel.jsx','../views/Reports/reportComponents.jsx','../views/Reports/reportHelpers.js'].map(p=>fs.readFileSync(new URL(p,import.meta.url),'utf-8')).join('\n');
-    expect(src.includes("paddingRight: sub ? '") || src.includes("paddingRight:sub ? '")).toBe(true);
+    const src = fs.readFileSync(new URL('../views/Reports/reportComponents.jsx', import.meta.url), 'utf-8');
+    // sub and parent rows now both use fontSize 12.5
+    expect(src).not.toContain('sub?11.5');
+    expect(src).not.toContain('sub ? 11.5');
+    expect(src).toContain('12.5');
   });
 });
 

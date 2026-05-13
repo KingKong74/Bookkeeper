@@ -49,7 +49,7 @@ export async function fetchJournals(orgId) {
     while (true) {
       const { data, error } = await supabase
         .from('journal_lines')
-        .select('*')
+        .select('*, transactions(date)')
         .in('journal_entry_id', entryIds.slice(i, i + 200))
         .range(lineOffset, lineOffset + PAGE - 1);
       if (error) throw error;
@@ -63,7 +63,12 @@ export async function fetchJournals(orgId) {
   const linesByEntry = {};
   for (const l of lines) {
     if (!linesByEntry[l.journal_entry_id]) linesByEntry[l.journal_entry_id] = [];
-    linesByEntry[l.journal_entry_id].push(l);
+    // Flatten transaction date onto line for date-range filtering in report helpers
+    linesByEntry[l.journal_entry_id].push({
+      ...l,
+      txn_date: l.transactions?.date ?? null,
+      transactions: undefined, // don't carry the nested object
+    });
   }
   return entries.map(e => ({ ...e, journal_lines: linesByEntry[e.id] ?? [] }));
 }

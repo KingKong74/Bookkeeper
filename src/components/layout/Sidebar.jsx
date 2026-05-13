@@ -138,12 +138,15 @@ export function Sidebar({ currentView, onNavigate, badges = {}, user, orgName, o
     // Phase 1: spin out (0 → 90°)
     setFlipPhase('out');
 
-    // At 130ms (end of spin-out = midpoint): apply theme + swap image
+    // At 130ms (end of spin-out = midpoint): apply theme + swap image + swap favicon
     setTimeout(() => {
       document.documentElement.setAttribute('data-theme', nextDark ? 'dark' : 'light');
       localStorage.setItem('pref_dark_mode', nextDark ? 'true' : 'false');
       setIsDark(nextDark);
       setImgDark(nextDark);
+      // Swap favicon at same moment as icon flip
+      const favicon = document.querySelector("link[rel~='icon']");
+      if (favicon) favicon.href = nextDark ? '/icon-dark.png' : '/icon-light.png';
       // Phase 2: spin in (-90° → 0)
       setFlipPhase('in');
     }, 130);

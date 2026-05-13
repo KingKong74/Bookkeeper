@@ -123,10 +123,10 @@ export function AppProvider({ children }) {
   const catMapById = { ...catMap };
 
   const PALETTE = [
-    '#3B6D11','#1D9E75','#639922','#085041','#BA7517','#854F0B',
+    'var(--gn)','#1D9E75','#639922','#085041','var(--a)','var(--a2)',
     '#993C1D','#D85A30','#185FA5','#0C447C','#D4537E','#993556',
     '#7F77DD','#534AB7','#0F6E56','#E24B4A','#5F5E5A','#444441',
-    '#888780','#A32D2D',
+    '#888780','var(--rd)',
   ];
 
   // ── Auth listener ──────────────────────────────────────────
@@ -165,7 +165,7 @@ export function AppProvider({ children }) {
         getPayees(activeOrg.id),
         getRules(activeOrg.id),
         getJournals(activeOrg.id),
-        getTransactions(activeOrg.id, dateFrom, dateTo),
+        getTransactions(activeOrg.id, '2000-01-01', '2099-12-31'),
         getBudgets(activeOrg.id, fyStart),
         getTaxProfile(activeOrg.id, fyStart),
         getTaxReferenceData(fyStart).catch(() => null),
@@ -197,7 +197,9 @@ export function AppProvider({ children }) {
 
   async function loadTransactions(orgId) {
     try {
-      const txns = await getTransactions(orgId, dateFrom, dateTo);
+      // Always fetch all-time transactions so context is complete.
+      // Views do their own date filtering via filterByDateRange / localDateFrom.
+      const txns = await getTransactions(orgId, '2000-01-01', '2099-12-31');
       setTransactions(txns.map(normaliseTxn));
     } catch (e) {
       console.error(e);
@@ -211,7 +213,7 @@ export function AppProvider({ children }) {
       const [cats, jnls, txns] = await Promise.all([
         getCategories(org.id),
         getJournals(org.id),
-        getTransactions(org.id, dateFrom, dateTo),
+        getTransactions(org.id, '2000-01-01', '2099-12-31'),
       ]);
       setCategories(cats.map(normaliseCat));
       setJournals(jnls);

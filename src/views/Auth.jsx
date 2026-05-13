@@ -41,6 +41,9 @@ export function AuthScreen() {
       applyTheme(next);
       setDark(next);
       setFlipPhase('in');
+      // Sync favicon at same midpoint as icon swap
+      const favicon = document.querySelector("link[rel~='icon']");
+      if (favicon) favicon.href = next ? '/icon-dark.png' : '/icon-light.png';
     }, 130);
     setTimeout(() => {
       setFlipPhase(null);

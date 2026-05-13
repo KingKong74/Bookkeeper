@@ -28,7 +28,7 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
           refreshData } = useApp();
 
   const [accountTab,    setAccountTab]    = useState(defaultAccountTab);
-  const [allocTab,      setAllocTab]      = useState('all');
+  const [allocTab,      setAllocTab]      = useState('uncategorised'); // default to Reconcile tab
   const [search,        setSearch]        = useState('');
   const [typeFilter,    setTypeFilter]    = useState('');
   const [payeeFilter,   setPayeeFilter]   = useState('');
@@ -129,36 +129,19 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
     return g;
   }, [cats]);
 
-  const pendingCatMap = useMemo(() => {
-    const unalloc = (txns || []).filter(t => !t.cat && !t._dismissed);
-    const map = {};
-    runAutoCatRules(unalloc, rules || []).forEach(s => { map[s.txnId] = s; });
-    for (const t of unalloc) {
-      if (map[t.id]?.sugCat) continue;
-      const merchant = extractMerchantName(t.desc || '');
-      if (!merchant) continue;
-      const est = estimateCategoryForMerchant(merchant, (t.desc || '').toLowerCase(), cats || []);
-      if (!est.catId) continue;
-      map[t.id] = { txnId: t.id, sugCat: est.catId, sugPayee: merchant, confidence: est.confidence === 'high' ? 'High' : 'Medium', reason: `Merchant: ${merchant}`, fromIntel: true };
-    }
-    return map;
-  }, [txns, rules, cats]);
-
   const acctBalances = useMemo(() => {
+    // Group txns by account first (one pass) then calculate balance per account
+    const sumByAcct = {};
+    (txns || []).forEach(t => {
+      if (!t.account_id) return;
+      sumByAcct[t.account_id] = (sumByAcct[t.account_id] || 0) + (t.amt ?? 0);
+    });
     const map = {};
     (accounts || []).forEach(a => {
-      const sum = (txns || []).filter(t => t.account_id === a.id).reduce((s, t) => s + (t.amt ?? 0), 0);
-      const ob  = parseFloat(a.opening_balance) || 0;
+      const sum  = sumByAcct[a.id] || 0;
+      const ob   = parseFloat(a.opening_balance) || 0;
       const isCC = a.type === 'credit_card' || a.type === 'loan';
-      if (isCC) {
-        // CC: opening_balance = amount owed at statement start (positive = owed)
-        // Spending transactions are negative (reduce your bank balance → increase CC debt)
-        // Current owed = opening_owed + (-sum_of_txns)  (spending is negative, so -negative = positive debt)
-        map[a.id] = ob - sum; // sum is negative for spending → -sum is positive = more owed
-      } else {
-        // Asset account: balance = opening + transactions (spending negative, deposits positive)
-        map[a.id] = ob + sum;
-      }
+      map[a.id]  = isCC ? ob - sum : ob + sum;
     });
     return map;
   }, [accounts, txns]);
@@ -172,6 +155,22 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
     else if (accountTab)           ft = ft.filter(t => t.account_id === accountTab);
     return ft;
   }, [txns, localDateFrom, localDateTo, accountTab]);
+
+  const pendingCatMap = useMemo(() => {
+    // Only process VISIBLE uncategorised transactions (baseFt), not all 890+
+    const unalloc = baseFt.filter(t => !t.cat && !t._dismissed);
+    const map = {};
+    runAutoCatRules(unalloc, rules || []).forEach(s => { map[s.txnId] = s; });
+    for (const t of unalloc) {
+      if (map[t.id]?.sugCat) continue;
+      const merchant = extractMerchantName(t.desc || '');
+      if (!merchant) continue;
+      const est = estimateCategoryForMerchant(merchant, (t.desc || '').toLowerCase(), cats || []);
+      if (!est.catId) continue;
+      map[t.id] = { txnId: t.id, sugCat: est.catId, sugPayee: merchant, confidence: est.confidence === 'high' ? 'High' : 'Medium', reason: `Merchant: ${merchant}`, fromIntel: true };
+    }
+    return map;
+  }, [baseFt, rules, cats]);
 
   const recon = useMemo(() => {
     const total = baseFt.length, matched = baseFt.filter(t => !!t.cat).length;
@@ -451,7 +450,7 @@ export function Transactions({ defaultAccountTab = null, onClearDefaultTab }) {
 
   return (
     <>
-      <div className="card" style={{ marginBottom: 0, borderBottomLeftRadius: 0, borderBottomRightRadius: 0, borderBottom: 'none' }}>
+      <div className="card" style={{ marginBottom: 0, borderBottomLeftRadius: 0, borderBottomRightRadius: 0, borderBottom: 'none', overflow: 'visible', minHeight: 120 }}>
         <TransactionFilters
           accounts={accounts} txns={txns} dateFrom={dateFrom} dateTo={dateTo}
           accountTab={accountTab} switchAccount={switchAccount} acctBalances={acctBalances} unlinkedCount={unlinkedCount}

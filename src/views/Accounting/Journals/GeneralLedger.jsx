@@ -6,7 +6,8 @@ import React, { useState, useMemo } from 'react';
 import { fmt } from '../../../utils/helpers';
 import { consolidateLines } from './journalHelpers';
 
-export function GeneralLedger({ journals, catMap, txns }) {
+export function GeneralLedger({ journals, catMap, txns, accounts }) {
+  const accountMap = useMemo(() => Object.fromEntries((accounts||[]).map(a=>[a.id,a])), [accounts]);
   const [search,   setSearch]   = useState('');
   const [expanded, setExpanded] = useState(new Set());
   function toggleAccount(key) { setExpanded(p=>{const n=new Set(p);n.has(key)?n.delete(key):n.add(key);return n;}); }
@@ -14,7 +15,7 @@ export function GeneralLedger({ journals, catMap, txns }) {
   const allLines = useMemo(()=>journals.filter(j=>j.status!=='void'&&(j.source==='auto_category'||j.source==='manual')).flatMap(j=>j.journal_lines||j.lines||[]),[journals]);
   const linesByAccount = useMemo(()=>{ const map={}; for(const l of allLines){const key=l.category_id?`cat:${l.category_id}`:l.bank_account_id?`bank:${l.bank_account_id}`:`name:${l.account_name||'—'}`;if(!map[key])map[key]=[];map[key].push(l);}return map;},[allLines]);
   const txnById = useMemo(()=>Object.fromEntries((txns||[]).map(t=>[t.id,t])),[txns]);
-  const consolidated = useMemo(()=>consolidateLines(allLines,catMap),[allLines,catMap]);
+  const consolidated = useMemo(()=>consolidateLines(allLines,catMap,accountMap),[allLines,catMap,accountMap]);
   const filtered = (search.trim()?consolidated.filter(r=>r.account_name.toLowerCase().includes(search.toLowerCase())||(r.code||'').includes(search)):consolidated).filter(r=>!r.synthetic);
   const totalDR=filtered.reduce((s,r)=>s+r.debit,0), totalCR=filtered.reduce((s,r)=>s+r.credit,0);
   const balanced=Math.abs(totalDR-totalCR)<0.01;

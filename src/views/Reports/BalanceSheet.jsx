@@ -6,8 +6,9 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
 import { PeriodBar } from '../../components/ui/PeriodBar';
-import { fmt, fmtAcct, filterByDateRange, buildBSFromJournals, dateRangeLabel } from '../../utils/helpers';
-import { A4Paper, CompareBar, StHead, StRow, StTotal, StGrand, BSRow, BSTotalRow } from './reportComponents';
+import { fmt, fmtAcct, fmtReport, filterByDateRange, buildBSFromJournals, dateRangeLabel } from '../../utils/helpers';
+import { A4Paper, MonoContext, CompareBar, CompareHeader, StHead, StRow, StTotal, StGrand, BSRow, BSTotalRow } from './reportComponents';
+import { MetricCard } from '../../components/ui/index.jsx';
 import { DrillPanel } from './DrillPanel';
 import { getPriorDates } from './reportHelpers';
 
@@ -131,13 +132,13 @@ export function BalanceSheet() {
               {(liquidAccounts.length > 0 || liquidTotal !== 0) && (
                 <>
                   <StHead>Cash &amp; Bank</StHead>
-                  {liquidAccounts.map(a => <StRow key={a.id} label={a.name} value={fmt(a.balance)} indent valueClass={a.balance >= 0 ? 'vp' : ''} clickable onClick={() => setDrill({ id: a.id, l: a.name, col: a.colour || '#185FA5', ac: a.type, t: 'asset', _isBankDrill: true })} />)}
-                  {liquidAccounts.length > 1 && <StTotal label="Total Cash &amp; Bank" value={fmt(liquidTotal)} valueClass={liquidTotal >= 0 ? 'vp' : ''} />}
+                  {liquidAccounts.map(a => <StRow key={a.id} label={a.name} value={fmtReport(a.balance)} indent valueClass={a.balance >= 0 ? 'vp' : 'vn'} clickable onClick={() => setDrill({ id: a.id, l: a.name, col: a.colour || '#185FA5', ac: a.type, t: 'asset', _isBankDrill: true })} />)}
+                  {liquidAccounts.length > 1 && <StTotal label="Total Cash &amp; Bank" value={fmtReport(liquidTotal)} valueClass={liquidTotal >= 0 ? 'vp' : 'vn'} />}
                 </>
               )}
-              {investAccounts.length > 0 && (<><StHead>Investments</StHead>{investAccounts.map(a => <StRow key={a.id} label={a.name} value={fmt(a.balance)} indent valueClass="vp" clickable onClick={() => setDrill({ id: a.id, l: a.name, col: a.colour || '#185FA5', ac: a.type, t: 'asset', _isBankDrill: true })} />)}<StTotal label="Total Investments" value={fmt(investTotal)} valueClass="vp" /></>)}
+              {investAccounts.length > 0 && (<><StHead>Investments</StHead>{investAccounts.map(a => <StRow key={a.id} label={a.name} value={fmtReport(a.balance)} indent valueClass={a.balance >= 0 ? 'vp' : 'vn'} clickable onClick={() => setDrill({ id: a.id, l: a.name, col: a.colour || '#185FA5', ac: a.type, t: 'asset', _isBankDrill: true })} />)}<StTotal label="Total Investments" value={fmt(investTotal)} valueClass="vp" /></>)}
               {fixedAssets.length > 0 && (<><StHead>Fixed Assets</StHead>{fixedAssets.map(c => <StRow key={c.id} label={c.l} value={fmt(Math.abs(c.total))} indent clickable onClick={() => setDrill(c)} />)}</>)}
-              <StGrand label="Total Assets" value={fmt(totalAssets)} />
+              <StGrand label="Total Assets" value={fmtReport(totalAssets)} />
             </div>
             <div>
               <StHead>Liabilities & Equity</StHead>
@@ -145,10 +146,10 @@ export function BalanceSheet() {
               {(ccAccounts.length > 0 || catLiabilities.length > 0 || (hasJournals && bs.liabilityLines?.length > 0)) && (
                 <>
                   <StHead>Liabilities</StHead>
-                  {ccAccounts.map(a => <StRow key={a.id} label={a.name} value={fmt(Math.abs(a.balance))} indent valueClass="vn" clickable onClick={() => setDrill({ id: a.id, l: a.name, col: a.colour || '#F87171', ac: a.type, t: 'liability', _isBankDrill: true })} />)}
-                  {catLiabilities.map(c => <StRow key={c.id} label={c.l} value={fmt(Math.abs(c.total))} indent valueClass="vn" />)}
-                  {hasJournals && bs.liabilityLines?.filter(l => !accountMap[l.id]).map(l => <StRow key={l.id || l.l} label={l.l || l.name} value={fmt(l.net)} indent valueClass="vn" />)}
-                  <StTotal label="Total Liabilities" value={fmt(totalLiab)} valueB={compare !== 'none' ? fmt(bsP?.totalLiabilities ?? 0) : undefined} valueClass="vn" />
+                  {ccAccounts.map(a => <StRow key={a.id} label={a.name} value={fmtReport(Math.abs(a.balance))} indent valueClass="" clickable onClick={() => setDrill({ id: a.id, l: a.name, col: a.colour || '#F87171', ac: a.type, t: 'liability', _isBankDrill: true })} />)}
+                  {catLiabilities.map(c => <StRow key={c.id} label={c.l} value={fmtReport(Math.abs(c.total))} indent />)}
+                  {hasJournals && bs.liabilityLines?.filter(l => !accountMap[l.id]).map(l => <StRow key={l.id || l.l} label={l.l || l.name} value={fmtReport(l.net)} indent />)}
+                  <StTotal label="Total Liabilities" value={fmtReport(totalLiab)} valueB={compare !== 'none' ? fmtReport(bsP?.totalLiabilities ?? 0) : undefined} />
                 </>
               )}
               <StHead>Equity</StHead>

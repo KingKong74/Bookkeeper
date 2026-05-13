@@ -63,18 +63,34 @@ export function BankAccounts({ onNavigate, onSandboxReview }) {
 
   // Build parsedFiles-format from raw DB transactions grouped by account
   async function routeToReview(insertedCount) {
-    if (insertedCount === 0) { toast('No new transactions found.'); return; }
-    // Refresh accounts in context
+    // Always check for pending rows - don't skip if insertedCount=0,
+    // there may be previously-synced rows still awaiting approval
     const freshAccts = await getBankAccounts(org.id);
     setAccounts(freshAccts);
 
-    // Fetch ONLY the pending_import transactions (awaiting user approval)
-    const { data: pendingTxns } = await supabase
-      .from('transactions')
-      .select('*')
-      .eq('org_id', org.id)
-      .eq('pending_import', true)
-      .order('date', { ascending: false });
+    // Fetch ALL pending_import transactions with pagination (no row limit hit)
+    let pendingTxns = [];
+    let pendingOffset = 0;
+    const PENDING_PAGE = 500;
+    while (true) {
+      const { data: page, error: pageErr } = await supabase
+        .from('transactions')
+        .select('*')
+        .eq('org_id', org.id)
+        .eq('pending_import', true)
+        .order('date', { ascending: false })
+        .range(pendingOffset, pendingOffset + PENDING_PAGE - 1);
+      if (pageErr) break;
+      if (!page?.length) break;
+      pendingTxns = pendingTxns.concat(page);
+      if (page.length < PENDING_PAGE) break;
+      pendingOffset += PENDING_PAGE;
+    }
+
+    if (!pendingTxns.length) {
+      toast(insertedCount > 0 ? `${insertedCount} transactions synced (all already approved).` : 'No pending transactions to review.');
+      return;
+    }
 
     const normaliseTxn = t => ({
       ...t,
@@ -211,11 +227,17 @@ export function BankAccounts({ onNavigate, onSandboxReview }) {
   function calcBalance(acct) {
     // Only count non-pending transactions
     const sum    = txnsList.filter(t => t.account_id === acct.id && !t.pending_import).reduce((s,t) => s+(t.amt??0), 0);
-    const ob     = parseFloat(acct.opening_balance) || 0;
+    const rawOb  = parseFloat(acct.opening_balance) || 0;
     const isCC   = acct.type === 'credit_card' || acct.type === 'loan';
-    // CC: opening_balance = amount owed. Spending (negative) increases debt: owed = ob - sum
-    // Asset: balance = ob + sum
-    return isCC ? ob - sum : ob + sum;
+    if (isCC) {
+      // Basiq stores CC balance as negative (e.g. -2771.86 = $2771.86 owed).
+      // Normalise to positive = amount owed.
+      // sum of txns: spending is negative (increases debt), payments positive (reduces debt).
+      // Closing owed = |ob| + (-sum) = |ob| - sum  (spending negative → -negative = more owed)
+      const obOwed = Math.abs(rawOb); // always positive = amount owed at opening
+      return obOwed - sum; // sum negative for spending → result increases; sum positive for payment → result decreases
+    }
+    return rawOb + sum;
   }
 
   // ── Edit / Create ──────────────────────────────────────────────────────────
@@ -371,7 +393,7 @@ export function BankAccounts({ onNavigate, onSandboxReview }) {
                     <>
                       <div style={{ fontSize:11, color:'var(--stone)', marginBottom:2 }}>Balance owing</div>
                       <div style={{ fontSize:22, fontWeight:500, color: balance > 0.005 ? 'var(--rd)' : balance < -0.005 ? 'var(--gn)' : 'var(--stone)', letterSpacing:'-0.02em' }}>
-                        {balance > 0.005 ? fmtBal(balance) : balance < -0.005 ? `${fmtBal(Math.abs(balance))} CR` : '$0.00'}
+                        {balance > 0.005 ? `${fmtBal(balance)} DR` : balance < -0.005 ? `${fmtBal(Math.abs(balance))} CR` : '$0.00'}
                       </div>
                       {acct.credit_limit && (
                         <>

@@ -12,7 +12,7 @@ import { DrillPanel } from './DrillPanel';
 import { getPriorDates, addSyntheticParents } from './reportHelpers';
 
 export function TrialBalance() {
-  const{txns,catMap,dateFrom,dateTo,journals,accounts}=useApp();
+  const{txns,catMap,dateFrom,dateTo,journals,accounts}=useApp(); // accounts = bank accounts
   const[drill,setDrill]=useState(null);
   const[compare,setCompare]=useState('none');
   const priorDates=getPriorDates(compare,dateFrom,dateTo);
@@ -23,7 +23,29 @@ export function TrialBalance() {
   function txnToTB(transactions){const map={};transactions.forEach(t=>{const cat=catMap[t.cat];if(!cat)return;const k=`cat:${cat.id}`;if(!map[k])map[k]={ac:cat.l,t:cat.t,col:cat.col,id:cat.id,dr:0,cr:0,label:cat.l};if((t.amt||0)>0)map[k].cr+=t.amt;else map[k].dr+=Math.abs(t.amt||0);});return Object.values(map).filter(a=>a.dr>0||a.cr>0);}
   const ft=useMemo(()=>filterByDateRange(txns,dateFrom,dateTo),[txns,dateFrom,dateTo]);
   const ftP=useMemo(()=>priorDates?filterByDateRange(txns,priorDates[0],priorDates[1]):[],[txns,priorDates]);
-  const accts=useMemo(()=>addSyntheticParents(hasJournals?journalAccts:txnToTB(ft),catMap),[hasJournals,journalAccts,ft,catMap]);
+  // Always use journalAccts for the TB — it includes bank account lines from double-entry.
+  // Fall back to txnToTB only if there are genuinely zero journals at all.
+  // Bank accounts with opening_date (manual setup) get seeded; Basiq accounts (no opening_date)
+  // show only via journal-line activity to avoid double-counting ob = live balance.
+  const bankOBRows = useMemo(() => {
+    return (accounts || []).flatMap(acct => {
+      if (!acct.opening_date) return []; // Basiq or no cutoff set — skip ob seeding
+      const ob = parseFloat(acct.opening_balance) || 0;
+      if (ob === 0) return [];
+      const isLiab = acct.type === 'credit_card' || acct.type === 'loan';
+      const net = isLiab ? ob : -ob; // liab = CR (+), asset = DR (-)
+      return [{ key: `bank:${acct.id}`, label: acct.name + ' (opening)', type: isLiab ? 'liability' : 'asset',
+        col: acct.colour || '#185FA5', dr: isLiab ? 0 : ob, cr: isLiab ? ob : 0,
+        net, cat_id: null, code: null, parent_id: null }];
+    });
+  }, [accounts]);
+  const accts=useMemo(()=>{
+    const base = hasJournals ? journalAccts : txnToTB(ft);
+    // Merge bankOBRows — only add if not already in base
+    const baseKeys = new Set(base.map(r => r.key));
+    const extra = bankOBRows.filter(r => !baseKeys.has(r.key));
+    return addSyntheticParents([...base, ...extra], catMap);
+  },[hasJournals,journalAccts,ft,catMap,bankOBRows]);
   const acctsp=useMemo(()=>addSyntheticParents(hasJournals?journalAcctsP:(priorDates?txnToTB(ftP):[]),catMap),[hasJournals,journalAcctsP,ftP,priorDates,catMap]);
   const acctsTB=accts.filter(a=>!a.parent_id);
   const balanced=isTBBalanced(accts.filter(a=>!a.synthetic));
