@@ -23,22 +23,22 @@ DROP POLICY IF EXISTS categories_delete ON accounts;
 -- Recreate RLS policies under new table name
 CREATE POLICY accounts_select ON accounts FOR SELECT USING (
   org_id IN (
-    SELECT org_id FROM org_members WHERE user_id = auth.uid()
+    SELECT org_id FROM memberships WHERE user_id = auth.uid()
   )
 );
 CREATE POLICY accounts_insert ON accounts FOR INSERT WITH CHECK (
   org_id IN (
-    SELECT org_id FROM org_members WHERE user_id = auth.uid()
+    SELECT org_id FROM memberships WHERE user_id = auth.uid()
   )
 );
 CREATE POLICY accounts_update ON accounts FOR UPDATE USING (
   org_id IN (
-    SELECT org_id FROM org_members WHERE user_id = auth.uid()
+    SELECT org_id FROM memberships WHERE user_id = auth.uid()
   )
 );
 CREATE POLICY accounts_delete ON accounts FOR DELETE USING (
   org_id IN (
-    SELECT org_id FROM org_members WHERE user_id = auth.uid()
+    SELECT org_id FROM memberships WHERE user_id = auth.uid()
   )
 );
 
